@@ -1,0 +1,45 @@
+name: Purview Scan
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Purview GitHub Action
+        uses: PurviewTest2/purview-github-action@main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Required
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+
+          # Authentication (omit to use GitHub OIDC federated credentials)
+          client-certificate: ${{ secrets.AZURE_CLIENT_CERTIFICATE }}
+
+          # User mapping
+          users-json-path: 'users.json'
+
+          # File scanning
+          file-patterns: '*'
+          exclude-patterns: ''
+          max-file-size: '10485760'
+
+          # First-run state tracking
+          state-repo-token: ${{ secrets.STATE_REPO_TOKEN }}
+          state-repo-branch: 'workflow'
+
+          # Debugging
+          debug: true

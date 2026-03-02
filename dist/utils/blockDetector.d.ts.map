@@ -1,0 +1,1 @@
+{"version":3,"file":"blockDetector.d.ts","sourceRoot":"","sources":["../../src/utils/blockDetector.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,sBAAsB,EAAE,YAAY,EAAE,MAAM,iBAAiB,CAAC;AAEvE;;;;;GAKG;AACH,wBAAgB,SAAS,CAAC,QAAQ,EAAE,sBAAsB,GAAG,OAAO,CASnE;AAED;;GAEG;AACH,wBAAgB,kBAAkB,CAAC,QAAQ,EAAE,sBAAsB,GAAG,YAAY,EAAE,CAOnF"}

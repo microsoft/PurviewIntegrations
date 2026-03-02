@@ -1,0 +1,66 @@
+name: 'Purview GitHub Action'
+description: 'Scan repository files and send to Azure Purview for governance'
+author: 'Microsoft'
+
+inputs:
+  client-id:
+    description: 'Azure AD application client ID for OIDC authentication'
+    required: true
+  client-certificate:
+    description: 'Optional PEM containing private key + certificate. If provided, uses certificate auth; otherwise uses GitHub OIDC federated credentials.'
+    required: false
+  tenant-id:
+    description: 'Azure AD tenant ID'
+    required: true
+  users-json-path:
+    description: 'Path to users.json in the workflow-definition repo (relative to repo root). In cross-repo workflows the file is fetched via the GitHub API using state-repo-token.'
+    required: false
+    default: 'users.json'
+  purview-account-name:
+    description: 'Name of the Purview account'
+    required: false
+  purview-endpoint:
+    description: 'Purview API endpoint URL'
+    required: false
+  file-patterns:
+    description: 'Comma-separated file patterns to scan (e.g., "*.md,*.json")'
+    required: false
+    default: '*'
+  exclude-patterns:
+    description: 'Comma-separated file patterns to exclude from scanning (e.g., "node_modules/**,dist/**")'
+    required: false
+    default: ''
+  max-file-size:
+    description: 'Maximum file size in bytes to process'
+    required: false
+    default: '10485760' # 10MB
+  debug:
+    description: 'Enable debug logging'
+    required: false
+    default: 'false'
+
+  # First-run state tracking (writes to the repo that defines the workflow)
+  state-repo-branch:
+    description: "Branch in the workflow-definition repo where the state marker is written. If empty, uses that repo's default branch."
+    required: false
+    default: ''
+  state-repo-token:
+    description: 'Token (PAT or GitHub App token) with contents write access to the workflow-definition repo. Used for first-run state tracking and for fetching users.json in cross-repo workflows.'
+    required: false
+    default: ''
+
+outputs:
+  processed-files:
+    description: 'Number of files processed'
+  failed-requests:
+    description: 'Number of failed API requests'
+  blocked-files:
+    description: 'JSON array of file paths that were blocked by data security policies'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
+
+branding:
+  icon: 'shield'
+  color: 'blue'
