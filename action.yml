@@ -25,7 +25,7 @@ inputs:
   file-patterns:
     description: 'Comma-separated file patterns to scan (e.g., "*.md,*.json")'
     required: false
-    default: '*'
+    default: '**'
   exclude-patterns:
     description: 'Comma-separated file patterns to exclude from scanning (e.g., "node_modules/**,dist/**")'
     required: false

@@ -335,7 +335,7 @@ jobs:
           # ══════════════════════════════════════
 
           # ── File scanning (optional) ──
-          file-patterns: '*'                    # Comma-separated glob patterns (e.g., '**/*.md,**/*.json')
+          file-patterns: '**'                    # Comma-separated glob patterns (e.g., '**/*.md,**/*.json')
           exclude-patterns: ''                  # Comma-separated patterns to exclude (e.g., '**/node_modules/**,**/dist/**')
           max-file-size: '10485760'             # Maximum file size in bytes (default: 10 MB)
 
@@ -454,6 +454,6 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           user-id: ${{ secrets.AZURE_USER_ID }}
-          file-patterns: '*'
+          file-patterns: '**'
           debug: true
 ```

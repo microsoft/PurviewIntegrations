@@ -59,7 +59,7 @@ jobs:
           client-certificate: ${{ secrets.AZURE_CLIENT_CERTIFICATE }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           users-json-path: 'users.json'
-          file-patterns: '*'
+          file-patterns: '**'
           debug: true
 ```
 
@@ -91,7 +91,7 @@ For each commit author, the action checks the email against the `users` array. I
 | `users-json-path` | Path to `users.json` in the workflow-definition repo (relative to repo root). In cross-repo workflows the file is fetched via the GitHub API using `state-repo-token`. | No | `users.json` |
 | `purview-account-name` | Name of the Purview account | No | - |
 | `purview-endpoint` | Purview API endpoint URL | No | `https://graph.microsoft.com/v1.0` |
-| `file-patterns` | Comma-separated file patterns to scan | No | `*` |
+| `file-patterns` | Comma-separated file patterns to scan | No | `**` |
 | `exclude-patterns` | Comma-separated file patterns to exclude from scanning | No | empty |
 | `max-file-size` | Maximum file size in bytes | No | `10485760` (10MB) |
 | `debug` | Enable debug logging | No | `false` |

@@ -33,7 +33,7 @@ jobs:
           users-json-path: 'users.json'
 
           # File scanning
-          file-patterns: '*'
+          file-patterns: '**'
           exclude-patterns: ''
           max-file-size: '10485760'
 
