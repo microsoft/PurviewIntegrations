@@ -134,10 +134,16 @@ export class FileProcessor {
       : includePatterns.some(p => minimatch(normalized, p, { dot: true }));
 
     if (!included) {
+      this.logger.info(`Excluding file '${path}' because it does not match any include patterns.`);
       return false;
     }
 
     const excluded = excludePatterns.some(p => minimatch(normalized, p, { dot: true }));
+
+    if (excluded) {
+      this.logger.info(`Excluding file '${path}' due to exclude pattern match.`);
+    }
+
     return !excluded;
   }
 
