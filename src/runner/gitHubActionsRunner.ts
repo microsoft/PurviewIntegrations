@@ -117,7 +117,7 @@ export class GitHubActionsRunner {
 
       const stateTrackingEffective = stateTrackingEnabled && !!stateRepoBranch;
 
-      let firstRun = true;
+      let firstRun = false;
       if (stateTrackingEffective) {
         const lookup = await stateService.lookupStateFile({
           owner: stateRepoOwner,
