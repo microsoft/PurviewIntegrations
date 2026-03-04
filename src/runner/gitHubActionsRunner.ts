@@ -148,7 +148,7 @@ export class GitHubActionsRunner {
       this.logger.info(`stateTrackingEffective: ${stateTrackingEffective}. First run: ${firstRun}`);
       this.logger.info(`stateTrackingEnabled: ${stateTrackingEnabled}, stateRepoBranch: ${stateRepoBranch}`);
       this.logger.info(`stateTrackingTokenPresent: ${stateTrackingTokenPresent}, workflowRepo: ${workflowRepo}, workflowRepoIsTarget: ${workflowRepoIsTarget}`);
-      this.logger.info(`stateRepoToken length: ${this.config.stateRepoToken.length}`);
+      this.logger.info(`stateRepoToken length: ${this.config.stateRepoToken?.length}`);
 
       if (firstRun) {
         this.logger.info(
