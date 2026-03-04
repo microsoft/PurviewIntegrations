@@ -132,18 +132,22 @@ export class GitHubActionsRunner {
           const githubToken = process.env['GITHUB_TOKEN'] || '';
           if (githubToken) {
             const octokit = github.getOctokit(githubToken);
-            const workflowId = process.env['GITHUB_WORKFLOW'] || '';
+            const workflowPath = process.env['GITHUB_WORKFLOW'] || '';
             
-            if (workflowId) {
+            if (workflowPath) {
+              // Extract just the filename from the workflow path (e.g., ".github/workflows/ci.yml" -> "ci.yml")
+              const workflowFile = workflowPath.split('/').pop() || workflowPath;
+              
               const { data: workflowRuns } = await octokit.rest.actions.listWorkflowRuns({
                 owner: targetOwner,
                 repo: targetRepo,
-                workflow_id: workflowId,
+                workflow_id: workflowFile,
                 status: 'completed',
                 per_page: 2,
               });
+
+              this.logger.info(`workflowRuns: ${JSON.stringify(workflowRuns)}`);
               
-              this.logger.info(`Workflow runs: ${JSON.stringify(workflowRuns)}`);
               // If there are no completed runs, this is the first run
               firstRun = workflowRuns.total_count === 0;
               
