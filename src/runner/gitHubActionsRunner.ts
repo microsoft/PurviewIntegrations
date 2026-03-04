@@ -133,21 +133,35 @@ export class GitHubActionsRunner {
           const githubToken = process.env['GITHUB_TOKEN'] || '';
           if (githubToken) {
             const octokit = github.getOctokit(githubToken);
-            const workflowPath = process.env['GITHUB_WORKFLOW'] || '';
             
-            if (workflowPath) {
-              // Extract just the filename from the workflow path (e.g., ".github/workflows/ci.yml" -> "ci.yml")
-              const workflowFile = workflowPath.split('/').pop() || workflowPath;
-              
+            // Try to get workflow file path from GITHUB_WORKFLOW_REF
+            let workflowFilePath = '';
+            const workflowRef = process.env['GITHUB_WORKFLOW_REF'] || '';
+            
+            if (workflowRef) {
+              // GITHUB_WORKFLOW_REF format: "octo-org/hello-world/.github/workflows/my-workflow.yml@refs/heads/main"
+              const refMatch = workflowRef.match(/\.github\/workflows\/[^@]+/);
+              if (refMatch) {
+                workflowFilePath = refMatch[0];
+                this.logger.info(`Extracted workflow file path from GITHUB_WORKFLOW_REF: ${workflowFilePath}`);
+              }
+            }
+            
+            // Fallback to github.context.workflow if available
+            if (!workflowFilePath && github.context.workflow) {
+              workflowFilePath = github.context.workflow;
+              this.logger.info(`Using workflow from github.context: ${workflowFilePath}`);
+            }
+            
+            if (workflowFilePath) {
               const { data: workflowRuns } = await octokit.rest.actions.listWorkflowRuns({
                 owner: targetOwner,
                 repo: targetRepo,
-                workflow_id: workflowFile,
+                workflow_id: workflowFilePath,
                 status: 'completed',
-                per_page: 2,
+                conclusion: 'success',
+                per_page: 1,
               });
-
-              this.logger.info(`workflowRuns: ${JSON.stringify(workflowRuns)}`);
               
               // If there are no completed runs, this is the first run
               firstRun = workflowRuns.total_count === 0;
@@ -157,7 +171,7 @@ export class GitHubActionsRunner {
                 : `Previous workflow runs found (${workflowRuns.total_count} completed runs), not first run`
               );
             } else {
-              this.logger.warn('GITHUB_WORKFLOW environment variable not available, defaulting to non-first run');
+              this.logger.warn('Could not determine workflow file path from GITHUB_WORKFLOW_REF or github.context, defaulting to non-first run');
               firstRun = false;
             }
           } else {
