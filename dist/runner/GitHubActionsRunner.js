@@ -63,6 +63,7 @@ class GitHubActionsRunner {
     }
     async execute() {
         try {
+            this.logger.info(`context: ${JSON.stringify(github.context)}`);
             this.logger.info(`Action event type: ${github.context.eventName}`);
             const stateService = new stateService_1.StateService(this.logger);
             const targetOwner = this.config.repository.owner;
