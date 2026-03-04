@@ -126,6 +126,43 @@ export class GitHubActionsRunner {
           token: stateRepoToken,
         }, statePath);
         firstRun = !lookup.exists;
+      } else {
+        // State tracking not enabled - check workflow history to determine if this is first run
+        try {
+          const githubToken = process.env['GITHUB_TOKEN'] || '';
+          if (githubToken) {
+            const octokit = github.getOctokit(githubToken);
+            const workflowId = process.env['GITHUB_WORKFLOW'] || '';
+            
+            if (workflowId) {
+              const { data: workflowRuns } = await octokit.rest.actions.listWorkflowRuns({
+                owner: targetOwner,
+                repo: targetRepo,
+                workflow_id: workflowId,
+                status: 'completed',
+                per_page: 2,
+              });
+              
+              this.logger.info(`Workflow runs: ${JSON.stringify(workflowRuns)}`);
+              // If there are no completed runs, this is the first run
+              firstRun = workflowRuns.total_count === 0;
+              
+              this.logger.info(firstRun 
+                ? 'First workflow run detected based on workflow history'
+                : `Previous workflow runs found (${workflowRuns.total_count} completed runs), not first run`
+              );
+            } else {
+              this.logger.warn('GITHUB_WORKFLOW environment variable not available, defaulting to non-first run');
+              firstRun = false;
+            }
+          } else {
+            this.logger.warn('GITHUB_TOKEN not available for workflow history check, defaulting to non-first run');
+            firstRun = false;
+          }
+        } catch (error) {
+          this.logger.warn('Failed to check workflow history, defaulting to non-first run', { error });
+          firstRun = false;
+        }
       }
 
       // Step 1: Authenticate
