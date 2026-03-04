@@ -314,10 +314,12 @@ class FileProcessor {
             this.logger.warn(`No files found in commit: ${commit.sha}`);
             return [];
         }
+        this.logger.info(`Processing commit ${commit.sha} with ${commit.files.length} changed file(s).`);
         let fileMetadata = [];
         const token = await this.authService.getToken();
         this.purviewClient.setAuthToken(token.accessToken);
         const filteredCommitFiles = commit.files.filter(f => this.shouldIncludePath(f.filename));
+        this.logger.info(`Commit ${commit.sha}: ${filteredCommitFiles.length}/${commit.files.length} files match the configured patterns.`);
         for (const file of filteredCommitFiles) {
             const metadata = {
                 path: file.filename,

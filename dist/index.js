@@ -778,10 +778,12 @@ class FileProcessor {
             this.logger.warn(`No files found in commit: ${commit.sha}`);
             return [];
         }
+        this.logger.info(`Processing commit ${commit.sha} with ${commit.files.length} changed file(s).`);
         let fileMetadata = [];
         const token = await this.authService.getToken();
         this.purviewClient.setAuthToken(token.accessToken);
         const filteredCommitFiles = commit.files.filter(f => this.shouldIncludePath(f.filename));
+        this.logger.info(`Commit ${commit.sha}: ${filteredCommitFiles.length}/${commit.files.length} files match the configured patterns.`);
         for (const file of filteredCommitFiles) {
             const metadata = {
                 path: file.filename,
@@ -1589,10 +1591,6 @@ class GitHubActionsRunner {
             // Cache of userIds that returned 401 on User PS — skip them on subsequent calls
             const userPsDeniedCache = new Set();
             // ─── Full Scan Path (first run) ───
-            this.logger.info(`stateTrackingEffective: ${stateTrackingEffective}. First run: ${firstRun}`);
-            this.logger.info(`stateTrackingEnabled: ${stateTrackingEnabled}, stateRepoBranch: ${stateRepoBranch}`);
-            this.logger.info(`stateTrackingTokenPresent: ${stateTrackingTokenPresent}, workflowRepo: ${workflowRepo}, workflowRepoIsTarget: ${workflowRepoIsTarget}`);
-            this.logger.info(`stateRepoToken length: ${this.config.stateRepoToken.length}`);
             if (firstRun) {
                 this.logger.info(stateTrackingEffective
                     ? 'First run detected; scanning full repository.'
