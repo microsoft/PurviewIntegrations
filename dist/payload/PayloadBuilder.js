@@ -160,16 +160,24 @@ class PayloadBuilder {
         for (const scope of scopes) {
             // Activity match: check if the scope's activity flag covers our request activity
             const activityMatch = this.matchActivity(scope.activities, requestActivity);
+            const clientId = this.config.clientId.toLowerCase();
+            const requestLocationType = requestLocation["@odata.type"].split(".").pop()?.toLowerCase() || "";
             // Location match: check OData type suffix + exact value
             let locationMatch = false;
             if (requestLocation) {
                 for (const loc of scope.locations || []) {
-                    if (loc["@odata.type"] &&
-                        requestLocation["@odata.type"] &&
-                        loc["@odata.type"].toLowerCase().endsWith(requestLocation["@odata.type"].split(".").pop()?.toLowerCase() || "") &&
-                        loc.value === requestLocation.value) {
-                        locationMatch = true;
-                        break;
+                    if (loc["@odata.type"] && requestLocationType) {
+                        const locDataType = loc["@odata.type"].toLowerCase();
+                        // Match if both properties of scope location match request location
+                        if (locDataType.endsWith(requestLocationType) && loc.value.toLowerCase() === requestLocation.value.toLowerCase()) {
+                            locationMatch = true;
+                            break;
+                        }
+                        // Or match if the location is a policyLocationApplication with a clientId match
+                        else if (locDataType.endsWith("policylocationapplication") && loc.value.toLowerCase() === clientId) {
+                            locationMatch = true;
+                            break;
+                        }
                     }
                 }
             }
