@@ -418,6 +418,14 @@ export interface UserMapping {
   userId: string;
 }
 
+export interface StateTrackingInfo {
+  token: string;
+  owner: string;
+  repo: string;
+  branch: string;
+  path: string;
+}
+
 // Process environment type augmentation
 declare global {
   namespace NodeJS {

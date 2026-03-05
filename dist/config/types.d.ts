@@ -330,6 +330,13 @@ export interface UserMapping {
     email: string;
     userId: string;
 }
+export interface StateTrackingInfo {
+    token: string;
+    owner: string;
+    repo: string;
+    branch: string;
+    path: string;
+}
 declare global {
     namespace NodeJS {
         interface ProcessEnv {

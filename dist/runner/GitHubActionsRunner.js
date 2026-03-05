@@ -42,10 +42,9 @@ const fileProcessor_1 = require("../file/fileProcessor");
 const purviewClient_1 = require("../api/purviewClient");
 const payloadBuilder_1 = require("../payload/payloadBuilder");
 const logger_1 = require("../utils/logger");
-const stateService_1 = require("../state/stateService");
-const workflowRepo_1 = require("../utils/workflowRepo");
 const blockDetector_1 = require("../utils/blockDetector");
 const prCommentService_1 = require("../utils/prCommentService");
+const fullScanService_1 = require("./fullScanService");
 class GitHubActionsRunner {
     config;
     logger;
@@ -53,6 +52,7 @@ class GitHubActionsRunner {
     fileProcessor;
     purviewClient;
     payloadBuilder;
+    fullScanService;
     constructor(config) {
         this.config = config;
         this.logger = new logger_1.Logger('GitHubActionsRunner');
@@ -60,261 +60,32 @@ class GitHubActionsRunner {
         this.fileProcessor = new fileProcessor_1.FileProcessor(this.config);
         this.purviewClient = new purviewClient_1.PurviewClient(this.config);
         this.payloadBuilder = new payloadBuilder_1.PayloadBuilder(this.config);
+        this.fullScanService = new fullScanService_1.FullScanService(this.config, this.fileProcessor, this.purviewClient, this.payloadBuilder);
     }
     async execute() {
         try {
             this.logger.info(`context: ${JSON.stringify(github.context)}`);
             this.logger.info(`Action event type: ${github.context.eventName}`);
-            const stateService = new stateService_1.StateService(this.logger);
-            const targetOwner = this.config.repository.owner;
-            const targetRepo = this.config.repository.repo;
-            const stateTrackingTokenPresent = !!(this.config.stateRepoToken && this.config.stateRepoToken.length > 0);
-            const statePath = stateService_1.StateService.defaultStatePathForTarget(targetOwner, targetRepo);
-            const workflowRepo = (0, workflowRepo_1.tryParseWorkflowRepoFromEnv)();
-            if (stateTrackingTokenPresent && !workflowRepo) {
-                this.logger.warn('State tracking token provided but GITHUB_WORKFLOW_REF is missing/unparseable; state tracking disabled.');
-            }
-            const workflowRepoIsTarget = !!workflowRepo &&
-                workflowRepo.owner.toLowerCase() === targetOwner.toLowerCase() &&
-                workflowRepo.repo.toLowerCase() === targetRepo.toLowerCase();
-            if (stateTrackingTokenPresent && workflowRepoIsTarget) {
-                this.logger.warn('State tracking token provided but workflow-definition repo is the scanned repo; state tracking disabled (no same-repo updates supported).');
-            }
-            const stateRepoToken = (this.config.stateRepoToken || '').trim();
-            const stateRepoOwner = workflowRepo?.owner || '';
-            const stateRepoName = workflowRepo?.repo || '';
-            const configuredBranch = (this.config.stateRepoBranch || '').trim();
-            let stateRepoBranch = configuredBranch;
-            const stateTrackingEnabled = stateTrackingTokenPresent && !!workflowRepo && !workflowRepoIsTarget;
-            if (stateTrackingEnabled && !stateRepoBranch) {
-                try {
-                    const octokit = github.getOctokit(stateRepoToken);
-                    const { data } = await octokit.rest.repos.get({
-                        owner: stateRepoOwner,
-                        repo: stateRepoName,
-                    });
-                    stateRepoBranch = data.default_branch;
-                    this.logger.info(`Resolved workflow repo default branch as ${stateRepoBranch}`);
-                }
-                catch (e) {
-                    this.logger.warn('Failed to resolve workflow repo default branch; state tracking disabled.', { error: e });
-                    stateRepoBranch = '';
-                }
-            }
-            // If a specific branch is configured, verify it exists; create it from the default branch if not
-            if (stateTrackingEnabled && stateRepoBranch && configuredBranch) {
-                try {
-                    const octokit = github.getOctokit(stateRepoToken);
-                    try {
-                        await octokit.rest.repos.getBranch({
-                            owner: stateRepoOwner,
-                            repo: stateRepoName,
-                            branch: stateRepoBranch,
-                        });
-                        this.logger.info(`State repo branch '${stateRepoBranch}' exists.`);
-                    }
-                    catch (branchErr) {
-                        if (branchErr?.status === 404) {
-                            this.logger.info(`State repo branch '${stateRepoBranch}' not found. Creating from default branch.`);
-                            // Get default branch SHA
-                            const { data: repoData } = await octokit.rest.repos.get({
-                                owner: stateRepoOwner,
-                                repo: stateRepoName,
-                            });
-                            const defaultBranch = repoData.default_branch;
-                            const { data: refData } = await octokit.rest.git.getRef({
-                                owner: stateRepoOwner,
-                                repo: stateRepoName,
-                                ref: `heads/${defaultBranch}`,
-                            });
-                            // Create the new branch
-                            await octokit.rest.git.createRef({
-                                owner: stateRepoOwner,
-                                repo: stateRepoName,
-                                ref: `refs/heads/${stateRepoBranch}`,
-                                sha: refData.object.sha,
-                            });
-                            this.logger.info(`Created branch '${stateRepoBranch}' from '${defaultBranch}' (${refData.object.sha}).`);
-                        }
-                        else {
-                            throw branchErr;
-                        }
-                    }
-                }
-                catch (e) {
-                    this.logger.warn(`Failed to verify/create state repo branch '${stateRepoBranch}'; state tracking may fail.`, { error: e });
-                }
-            }
-            const stateTrackingEffective = stateTrackingEnabled && !!stateRepoBranch;
-            let firstRun = false;
-            if (stateTrackingEffective) {
-                const lookup = await stateService.lookupStateFile({
-                    owner: stateRepoOwner,
-                    repo: stateRepoName,
-                    branch: stateRepoBranch,
-                    token: stateRepoToken,
-                }, statePath);
-                firstRun = !lookup.exists;
-            }
-            else {
-                // State tracking not enabled - check workflow history to determine if this is first run
-                try {
-                    const githubToken = process.env['GITHUB_TOKEN'] || '';
-                    if (githubToken) {
-                        const octokit = github.getOctokit(githubToken);
-                        // Try to get workflow file path from GITHUB_WORKFLOW_REF
-                        let workflowFilePath = '';
-                        const workflowRef = process.env['GITHUB_WORKFLOW_REF'] || '';
-                        if (workflowRef) {
-                            // GITHUB_WORKFLOW_REF format: "octo-org/hello-world/.github/workflows/my-workflow.yml@refs/heads/main"
-                            const refMatch = workflowRef.match(/\.github\/workflows\/[^@]+/);
-                            if (refMatch) {
-                                workflowFilePath = refMatch[0];
-                                this.logger.info(`Extracted workflow file path from GITHUB_WORKFLOW_REF: ${workflowFilePath}`);
-                            }
-                        }
-                        // Fallback to github.context.workflow if available
-                        if (!workflowFilePath && github.context.workflow) {
-                            workflowFilePath = github.context.workflow;
-                            this.logger.info(`Using workflow from github.context: ${workflowFilePath}`);
-                        }
-                        if (workflowFilePath) {
-                            const { data: workflowRuns } = await octokit.rest.actions.listWorkflowRuns({
-                                owner: targetOwner,
-                                repo: targetRepo,
-                                workflow_id: workflowFilePath,
-                                status: 'completed',
-                                conclusion: 'success',
-                                per_page: 1,
-                            });
-                            // If there are no completed runs, this is the first run
-                            firstRun = workflowRuns.total_count === 0;
-                            this.logger.info(firstRun
-                                ? 'First workflow run detected based on workflow history'
-                                : `Previous workflow runs found (${workflowRuns.total_count} completed runs), not first run`);
-                        }
-                        else {
-                            this.logger.warn('Could not determine workflow file path from GITHUB_WORKFLOW_REF or github.context, defaulting to non-first run');
-                            firstRun = false;
-                        }
-                    }
-                    else {
-                        this.logger.warn('GITHUB_TOKEN not available for workflow history check, defaulting to non-first run');
-                        firstRun = false;
-                    }
-                }
-                catch (error) {
-                    this.logger.warn('Failed to check workflow history, defaulting to non-first run', { error });
-                    firstRun = false;
-                }
-            }
-            // Step 1: Authenticate
+            // Step 1: Setup state tracking and determine first run
+            const { firstRun, stateInfo } = await this.fullScanService.setupStateTrackingAndDetectFirstRun();
+            // Step 2: Authenticate
             this.logger.info('Authenticating with Azure');
             const token = await this.authService.getToken();
             this.purviewClient.setAuthToken(token.accessToken);
-            // Step 2: Get PR info
+            // Step 3: Get PR info
             this.logger.info('Processing repository files');
             const prInfo = await this.fileProcessor.getPrInfo();
             const failedPayloads = [];
             const blockedFiles = [];
-            let fullScanFileCount = 0;
             // Cache of userIds that returned 401 on User PS — skip them on subsequent calls
             const userPsDeniedCache = new Set();
             // ─── Full Scan Path (first run) ───
+            let fullScanFileCount = 0;
             if (firstRun) {
-                this.logger.info(stateTrackingEffective
-                    ? 'First run detected; scanning full repository.'
-                    : 'State tracking disabled; scanning full repository.');
-                const allFiles = await this.fileProcessor.getAllRepoFiles();
-                fullScanFileCount = allFiles.length;
-                if (allFiles.length === 0) {
-                    this.logger.warn('No files found in repository for full scan');
-                }
-                else {
-                    // Call tenant protection scopes
-                    const psRequest = this.payloadBuilder.buildProtectionScopesRequest();
-                    this.logger.info('Calling searchTenantProtectionScope for full scan');
-                    const tenantPsResponse = await this.purviewClient.searchTenantProtectionScope(psRequest);
-                    if (!tenantPsResponse.success) {
-                        // Tenant PS failed → fallback: contentActivities for ALL files
-                        this.logger.error(`Tenant PS failed: ${tenantPsResponse.error}. Falling back to contentActivities for all ${allFiles.length} file(s).`);
-                        failedPayloads.push('tenant-ps');
-                        await this.sendContentActivities(allFiles, prInfo, failedPayloads);
-                    }
-                    else if (!tenantPsResponse.data?.value || tenantPsResponse.data.value.length === 0) {
-                        // Tenant PS has no scopes → contentActivities for ALL files
-                        this.logger.warn('Tenant PS returned no protection scopes. Falling back to contentActivities for all files.');
-                        await this.sendContentActivities(allFiles, prInfo, failedPayloads);
-                    }
-                    else {
-                        // Tenant PS has scopes → group files by user and call per-user PS + PCA
-                        this.logger.info(`Tenant PS returned ${tenantPsResponse.data.value.length} scope(s). Grouping files by user for per-user PS + PCA.`);
-                        const filesByUser = new Map();
-                        for (const file of allFiles) {
-                            const userId = file.authorId || this.config.userId;
-                            const existing = filesByUser.get(userId) || [];
-                            existing.push(file);
-                            filesByUser.set(userId, existing);
-                        }
-                        for (const [userId, userFiles] of filesByUser) {
-                            this.logger.info(`Full scan: processing ${userFiles.length} file(s) for user ${userId}`);
-                            // Call per-user protection scopes
-                            const userPsResponse = await this.purviewClient.searchUserProtectionScope(userId, psRequest);
-                            if (!userPsResponse.success) {
-                                this.logger.error(`User PS failed for ${userId}: ${userPsResponse.error}. Falling back to contentActivities.`);
-                                failedPayloads.push(`ps-fullscan-${userId}`);
-                                // Cache 401s so we don't retry this user in the diff path
-                                if (userPsResponse.statusCode === 401) {
-                                    userPsDeniedCache.add(userId);
-                                    this.logger.warn(`User ${userId} returned 401 on PS — cached, will skip in future calls.`);
-                                }
-                                await this.sendContentActivities(userFiles, prInfo, failedPayloads);
-                                continue;
-                            }
-                            if (!userPsResponse.data?.value || userPsResponse.data.value.length === 0) {
-                                this.logger.warn(`User PS returned no scopes for ${userId}. Falling back to contentActivities.`);
-                                await this.sendContentActivities(userFiles, prInfo, failedPayloads);
-                                continue;
-                            }
-                            // User has scopes → send PCA batch
-                            const pcaBatchRequest = this.payloadBuilder.buildProcessContentBatchRequest(userFiles, prInfo);
-                            this.logger.info(`Full scan: sending ${userFiles.length} file(s) to PCA batch for user ${userId}`);
-                            const pcaResult = await this.purviewClient.processContentAsync(pcaBatchRequest);
-                            if (!pcaResult.success) {
-                                this.logger.error(`PCA batch failed for user ${userId}: ${pcaResult.error}. Falling back to contentActivities.`);
-                                failedPayloads.push(`pca-fullscan-${userId}`);
-                                await this.sendContentActivities(userFiles, prInfo, failedPayloads);
-                            }
-                            else {
-                                this.logger.info(`Full scan PCA batch completed for user ${userId}`);
-                            }
-                        }
-                    }
-                }
-                // Write state marker
-                if (stateTrackingEffective) {
-                    try {
-                        const state = {
-                            version: 1,
-                            targetRepository: `${targetOwner}/${targetRepo}`,
-                            initializedAt: new Date().toISOString(),
-                            initializedByRunId: this.config.repository.runId,
-                            initializedByCommit: this.config.repository.sha,
-                        };
-                        await stateService.writeStateFile({
-                            owner: stateRepoOwner,
-                            repo: stateRepoName,
-                            branch: stateRepoBranch,
-                            token: stateRepoToken,
-                        }, statePath, state, `Initialize Purview scan state for ${targetOwner}/${targetRepo}`);
-                        this.logger.info('State marker written successfully');
-                    }
-                    catch (e) {
-                        this.logger.warn('Failed to write state marker file (non-fatal).', { error: e });
-                    }
-                }
+                fullScanFileCount = await this.fullScanService.performFullScan(stateInfo, failedPayloads, prInfo, userPsDeniedCache);
             }
             // ─── PR Diff Path (always runs) ───
+            // Step 4: Process PR diff files
             this.logger.info('Running PR diff flow');
             const diffFiles = await this.fileProcessor.getLatestPushFiles();
             if (diffFiles.length === 0) {
@@ -444,12 +215,12 @@ class GitHubActionsRunner {
                     }
                 }
             }
-            // Step 6: Set outputs
+            // Step 5: Set outputs
             const totalProcessed = fullScanFileCount + diffFiles.length;
             core.setOutput('processed-files', totalProcessed);
             core.setOutput('failed-requests', failedPayloads.length);
             core.setOutput('blocked-files', JSON.stringify(blockedFiles.map(bf => bf.filePath)));
-            // Summary
+            // Step 6: Summary
             await this.createSummary(totalProcessed, failedPayloads, blockedFiles);
         }
         catch (error) {
