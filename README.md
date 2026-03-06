@@ -39,6 +39,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:  # Allow manual triggering for full scans
 
 permissions:
   id-token: write
@@ -135,6 +136,26 @@ with:
 ### First-run state tracking
 
 When `state-repo-token` is provided, the action stores a marker file (`.purview/state/<owner>-<repo>.json`) in the workflow-definition repo. On the first run it performs a full repository scan; subsequent runs only process changed files. The scanned repository only needs `contents: read` — the action never writes files back into it.
+
+### Manual full scan
+
+You can trigger a complete repository scan by running the workflow manually via `workflow_dispatch`. This is useful when:
+
+- You want to re-scan all files after updating Purview policies
+- You need to ensure full compliance after security changes
+- You're troubleshooting issues and want to reprocess everything
+
+Simply add `workflow_dispatch` to your workflow triggers and run it manually from the GitHub Actions tab:
+
+```yaml
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:  # Enables manual triggering for full scans
+```
+
+When triggered via `workflow_dispatch`, the action will automatically perform a full repository scan regardless of state tracking.
 
 ## Outputs
 
