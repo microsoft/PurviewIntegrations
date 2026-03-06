@@ -1,4 +1,4 @@
-import { ActionConfig, FileMetadata, PurviewPayload, PurviewMessage, UploadSignalRequest, Activity, TextContent, PrFileContext, PrInfo, ProtectionScopesRequest, ProtectionScopesResponse, SplitPCRequests, ProtectionScopeActivities, ProcessContentBatchRequest, ProcessContentRequestItem, ProcessContentRequest, ContentToProcess, ScopeCheckResult, ExecutionMode, PolicyScopes, PolicyLocation, DlpActionInfo } from '../config/types';
+import { ActionConfig, FileMetadata, PurviewPayload, PurviewMessage, UploadSignalRequest, Activity, TextContent, PrInfo, ProtectionScopesRequest, ProtectionScopesResponse, SplitPCRequests, ProtectionScopeActivities, ProcessContentBatchRequest, ProcessContentRequestItem, ProcessContentRequest, ContentToProcess, ScopeCheckResult, ExecutionMode, PolicyScopes, PolicyLocation, DlpActionInfo } from '../config/types';
 import { Logger } from '../utils/logger';
 
 export class PayloadBuilder {
@@ -294,27 +294,6 @@ export class PayloadBuilder {
   }
   
   private createContentToProcess(file: FileMetadata, prInfo: PrInfo, conversationId: string, messageId: number): ContentToProcess {
-    let prMetadata: PrFileContext = {
-        fileName: file.path,
-        prId: this.config.repository.runId,
-        repoOwner: this.config.repository.owner,
-        repoName: this.config.repository.repo,
-        branchName: prInfo.head,
-        baseName: prInfo.base,
-        title: prInfo.title,
-        commitSha: this.config.repository.sha,
-        fileSize: file.size,
-        authorLogin: file.authorLogin || prInfo.authorLogin,
-        authorEmail: file.authorEmail || prInfo.authorEmail,
-        commitTimestamp: file.commitTimestamp,
-        numberOfDeletions: file.numberOfDeletions || 0,
-        numberOfAdditions: file.numberOfAdditions || 0,
-        numberOfChanges: file.numberOfChanges || 0,
-        typeOfChange: file.typeOfChange || "unknown"
-    };
-
-    const serializedData = JSON.stringify(prMetadata);
-
     let userId = file.authorId;
 
     if (!userId) {
@@ -356,8 +335,8 @@ export class PayloadBuilder {
         name: "Github",
         version: "0.0.1",
         applicationLocation: {
-          "@odata.type": "microsoft.graph.policyLocationApplication",
-          value: serializedData,
+          "@odata.type": "microsoft.graph.policyLocationUrl",
+          value: prInfo.url || `https://${PayloadBuilder.domain}/${this.config.repository.owner}/${this.config.repository.repo}`
         }
       }
     };

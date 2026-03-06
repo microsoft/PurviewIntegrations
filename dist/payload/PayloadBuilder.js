@@ -248,25 +248,6 @@ class PayloadBuilder {
         return { processContentRequests: items };
     }
     createContentToProcess(file, prInfo, conversationId, messageId) {
-        let prMetadata = {
-            fileName: file.path,
-            prId: this.config.repository.runId,
-            repoOwner: this.config.repository.owner,
-            repoName: this.config.repository.repo,
-            branchName: prInfo.head,
-            baseName: prInfo.base,
-            title: prInfo.title,
-            commitSha: this.config.repository.sha,
-            fileSize: file.size,
-            authorLogin: file.authorLogin || prInfo.authorLogin,
-            authorEmail: file.authorEmail || prInfo.authorEmail,
-            commitTimestamp: file.commitTimestamp,
-            numberOfDeletions: file.numberOfDeletions || 0,
-            numberOfAdditions: file.numberOfAdditions || 0,
-            numberOfChanges: file.numberOfChanges || 0,
-            typeOfChange: file.typeOfChange || "unknown"
-        };
-        const serializedData = JSON.stringify(prMetadata);
         let userId = file.authorId;
         if (!userId) {
             this.logger.warn(`No user ID found for file: ${file.path} with author ${file.authorEmail}}, using default user ID`);
@@ -304,8 +285,8 @@ class PayloadBuilder {
                 name: "Github",
                 version: "0.0.1",
                 applicationLocation: {
-                    "@odata.type": "microsoft.graph.policyLocationApplication",
-                    value: serializedData,
+                    "@odata.type": "microsoft.graph.policyLocationUrl",
+                    value: prInfo.url || `https://${PayloadBuilder.domain}/${this.config.repository.owner}/${this.config.repository.repo}`
                 }
             }
         };
