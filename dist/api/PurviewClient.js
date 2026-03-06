@@ -179,7 +179,6 @@ class PurviewClient {
         this.logger.debug('Sending request', {
             endpoint,
             payloadSize: JSON.stringify(payload).length,
-            payload: payload
         });
         try {
             const response = await fetch(endpoint, {
@@ -213,7 +212,6 @@ class PurviewClient {
             }
             try {
                 const data = responseText ? JSON.parse(responseText) : {};
-                this.logger.debug('Parsed response data', { data });
                 const etag = response.headers.get('etag')?.replace(/"/g, '') || undefined;
                 this.logger.endGroup();
                 return {
