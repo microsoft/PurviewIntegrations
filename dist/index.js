@@ -185,7 +185,8 @@ class PurviewClient {
         this.logger.startGroup('Purview API Request');
         this.logger.debug('Sending request', {
             endpoint,
-            payloadSize: JSON.stringify(payload).length
+            payloadSize: JSON.stringify(payload).length,
+            payload: payload
         });
         try {
             const response = await fetch(endpoint, {
@@ -219,6 +220,7 @@ class PurviewClient {
             }
             try {
                 const data = responseText ? JSON.parse(responseText) : {};
+                this.logger.debug('Parsed response data', { data });
                 const etag = response.headers.get('etag')?.replace(/"/g, '') || undefined;
                 this.logger.endGroup();
                 return {
@@ -1835,7 +1837,6 @@ class GitHubActionsRunner {
     }
     async execute() {
         try {
-            this.logger.info(`context: ${JSON.stringify(github.context)}`);
             this.logger.info(`Action event type: ${github.context.eventName}`);
             // Step 1: Setup state tracking and determine first run
             const { firstRun, stateInfo } = await this.fullScanService.setupStateTrackingAndDetectFirstRun();
@@ -1993,6 +1994,14 @@ class GitHubActionsRunner {
             core.setOutput('blocked-files', JSON.stringify(blockedFiles.map(bf => bf.filePath)));
             // Step 6: Summary
             await this.createSummary(totalProcessed, failedPayloads, blockedFiles);
+            // Step 7: Fail the action if any files were blocked
+            if (blockedFiles.length > 0) {
+                const blockedFilePaths = blockedFiles.map(bf => bf.filePath).join(', ');
+                const message = `Action failed: ${blockedFiles.length} file(s) were blocked by data security policies: ${blockedFilePaths}`;
+                this.logger.error(message);
+                core.setFailed(message);
+                return;
+            }
         }
         catch (error) {
             this.logger.error('Execution failed', { error });

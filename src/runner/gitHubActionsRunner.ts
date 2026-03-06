@@ -34,7 +34,6 @@ export class GitHubActionsRunner {
   
   async execute(): Promise<void> {
     try {
-      this.logger.info(`context: ${JSON.stringify(github.context)}`);
       this.logger.info(`Action event type: ${github.context.eventName}`);
 
       // Step 1: Setup state tracking and determine first run

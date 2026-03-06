@@ -64,7 +64,6 @@ class GitHubActionsRunner {
     }
     async execute() {
         try {
-            this.logger.info(`context: ${JSON.stringify(github.context)}`);
             this.logger.info(`Action event type: ${github.context.eventName}`);
             // Step 1: Setup state tracking and determine first run
             const { firstRun, stateInfo } = await this.fullScanService.setupStateTrackingAndDetectFirstRun();
@@ -222,6 +221,14 @@ class GitHubActionsRunner {
             core.setOutput('blocked-files', JSON.stringify(blockedFiles.map(bf => bf.filePath)));
             // Step 6: Summary
             await this.createSummary(totalProcessed, failedPayloads, blockedFiles);
+            // Step 7: Fail the action if any files were blocked
+            if (blockedFiles.length > 0) {
+                const blockedFilePaths = blockedFiles.map(bf => bf.filePath).join(', ');
+                const message = `Action failed: ${blockedFiles.length} file(s) were blocked by data security policies: ${blockedFilePaths}`;
+                this.logger.error(message);
+                core.setFailed(message);
+                return;
+            }
         }
         catch (error) {
             this.logger.error('Execution failed', { error });
