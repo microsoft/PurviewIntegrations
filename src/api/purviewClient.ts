@@ -234,7 +234,7 @@ export class PurviewClient {
     this.logger.startGroup('Purview API Request');
     this.logger.debug('Sending request', { 
       endpoint, 
-      payloadSize: JSON.stringify(payload).length,
+      payloadSize: JSON.stringify(payload).length
     });
     
     try {

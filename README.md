@@ -21,6 +21,7 @@ A GitHub Action that scans repository files and sends them to Azure Purview for 
   * ContentActivity.Write (Application)
   * Content.Process.User (Application)
   * ProtectionScopes.Compute.All (Application)
+  * (Optional, used for user id lookup) User.Read.All (Application)
 2. Grant admin content to those permissions
 3. In that app registration, click the "Certificates & secrets" tab, then click the "Federated credentials" tab, and click "Add credential"
 4. Choose "Other issuer" from the "Federated credential scenario" dropdown.
@@ -44,7 +45,8 @@ on:
 permissions:
   id-token: write
   contents: read
-  pull-requests: read
+  pull-requests: write
+  actions: read
 
 jobs:
   scan:
@@ -93,7 +95,7 @@ For each commit author, the action checks the email against the `users` array. I
 | `purview-account-name` | Name of the Purview account | No | - |
 | `purview-endpoint` | Purview API endpoint URL | No | `https://graph.microsoft.com/v1.0` |
 | `file-patterns` | Comma-separated file patterns to scan | No | `**` |
-| `exclude-patterns` | Comma-separated file patterns to exclude from scanning | No | empty |
+| `exclude-patterns` | Comma-separated file patterns to exclude from scanning | No | `**/.git/**` |
 | `max-file-size` | Maximum file size in bytes | No | `10485760` (10MB) |
 | `debug` | Enable debug logging | No | `false` |
 | `state-repo-branch` | Branch in the workflow-definition repo where the state marker is written | No | repo default branch |
@@ -136,6 +138,8 @@ with:
 ### First-run state tracking
 
 When `state-repo-token` is provided, the action stores a marker file (`.purview/state/<owner>-<repo>.json`) in the workflow-definition repo. On the first run it performs a full repository scan; subsequent runs only process changed files. The scanned repository only needs `contents: read` — the action never writes files back into it.
+
+If state repo tracking is not configured, the action queries the repo's workflow history to check if it has been run before. If the action has not been run before, or if previous runs have all failed, it will perform a full scan.
 
 ### Manual full scan
 

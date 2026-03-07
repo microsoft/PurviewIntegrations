@@ -55,6 +55,7 @@ Before you begin, make sure you have the following:
    - `ContentActivity.Write`
    - `Content.Process.User`
    - `ProtectionScopes.Compute.All`
+9. If the committers to your repo will be using email addresses associated with your tenant, add the `User.Read.All` Application permission.
 9. Click **Grant admin consent for \<your tenant\>** and confirm.
 
 ---
@@ -255,7 +256,8 @@ on:
 permissions:
   id-token: write
   contents: read
-  pull-requests: read
+  pull-requests: write
+  actions: read
 
 jobs:
   scan:
@@ -301,7 +303,8 @@ on:
 permissions:
   id-token: write       # Required for token exchange
   contents: read        # Required to read repository files
-  pull-requests: read   # Required to read pull request metadata
+  pull-requests: write  # Required to read pull request metadata and create a comment if anything was blocked
+  actions: read         # Required to read history of previous workflow runs
 
 jobs:
   scan:
@@ -336,8 +339,8 @@ jobs:
 
           # ── File scanning (optional) ──
           file-patterns: '**'                    # Comma-separated glob patterns (e.g., '**/*.md,**/*.json')
-          exclude-patterns: ''                  # Comma-separated patterns to exclude (e.g., '**/node_modules/**,**/dist/**')
-          max-file-size: '10485760'             # Maximum file size in bytes (default: 10 MB)
+          exclude-patterns: '**/.git/**'         # Comma-separated patterns to exclude (e.g., '**/node_modules/**,**/dist/**')
+          max-file-size: '10485760'              # Maximum file size in bytes (default: 10 MB)
 
           # ── State tracking (optional) ──
           # Enables first-run detection: full scan on first run, delta scans thereafter.

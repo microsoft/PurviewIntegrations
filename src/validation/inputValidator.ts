@@ -143,7 +143,7 @@ export async function validateInputs(): Promise<ActionConfig> {
     
     // Get optional inputs
     const filePatterns = core.getInput('file-patterns') || '**';
-    const excludePatternsRaw = core.getInput('exclude-patterns') || '';
+    const excludePatternsRaw = core.getInput('exclude-patterns') || '**/.git/**';
     const maxFileSize = parseInt(core.getInput('max-file-size') || '10485760', 10);
     const debug = core.getBooleanInput('debug');
 
