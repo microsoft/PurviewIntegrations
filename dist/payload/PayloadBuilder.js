@@ -139,7 +139,7 @@ class PayloadBuilder {
         }
         this.logger.info(`Files to process: ${filesToProcess.length}, Files to upload: ${filesToUpload.length}`);
         const uploadSignalRequests = filesToUpload.length > 0 ? this.buildUploadSignalRequest(filesToUpload, prInfo) : [];
-        const pcbRequest = filesToProcess.length > 0 ? this.buildProcessContentBatchRequest(filesToProcess, prInfo) : undefined;
+        const pcbRequest = filesToProcess.length > 0 ? this.buildProcessContentBatchRequest(filesToProcess) : undefined;
         return {
             uploadSignalRequests: uploadSignalRequests,
             processContentRequest: pcbRequest
@@ -198,8 +198,8 @@ class PayloadBuilder {
     /**
      * Build a per-user ProcessContentRequest for inline PC calls.
      */
-    buildPerUserProcessContentRequest(file, prInfo, conversationId, messageId) {
-        const contentToProcess = this.createContentToProcess(file, prInfo, conversationId, messageId);
+    buildPerUserProcessContentRequest(file, conversationId, messageId) {
+        const contentToProcess = this.createContentToProcess(file, conversationId, messageId);
         return { contentToProcess };
     }
     matchActivity(scopeActivities, requestActivity) {
@@ -221,7 +221,7 @@ class PayloadBuilder {
         let conversationId = crypto.randomUUID();
         files.forEach((file, index) => {
             this.logger.info(`Building upload signal request for file: ${file.path}`);
-            const contentToProcess = this.createContentToProcess(file, prInfo, conversationId, index);
+            const contentToProcess = this.createContentToProcess(file, conversationId, index);
             const userId = file.authorId || this.config.userId;
             const signalRequest = {
                 id: crypto.randomUUID(),
@@ -234,11 +234,11 @@ class PayloadBuilder {
         });
         return requests;
     }
-    buildProcessContentBatchRequest(files, prInfo) {
+    buildProcessContentBatchRequest(files) {
         const items = [];
         const conversationId = crypto.randomUUID();
         files.forEach((file, index) => {
-            const contentToProcess = this.createContentToProcess(file, prInfo, conversationId, index);
+            const contentToProcess = this.createContentToProcess(file, conversationId, index);
             items.push({
                 contentToProcess: contentToProcess,
                 userId: file.authorId || this.config.userId,
@@ -247,7 +247,7 @@ class PayloadBuilder {
         });
         return { processContentRequests: items };
     }
-    createContentToProcess(file, prInfo, conversationId, messageId) {
+    createContentToProcess(file, conversationId, messageId) {
         let userId = file.authorId;
         if (!userId) {
             this.logger.warn(`No user ID found for file: ${file.path} with author ${file.authorEmail}}, using default user ID`);
@@ -285,8 +285,8 @@ class PayloadBuilder {
                 name: "Github",
                 version: "0.0.1",
                 applicationLocation: {
-                    "@odata.type": "microsoft.graph.policyLocationUrl",
-                    value: prInfo.url || `https://${PayloadBuilder.domain}/${this.config.repository.owner}/${this.config.repository.repo}`
+                    "@odata.type": "microsoft.graph.policyLocationDomain",
+                    value: `https://${PayloadBuilder.domain}`
                 }
             }
         };

@@ -22,7 +22,7 @@ A GitHub Action that scans repository files and sends them to Azure Purview for 
   * Content.Process.User (Application)
   * ProtectionScopes.Compute.All (Application)
   * (Optional, used for user id lookup) User.Read.All (Application)
-2. Grant admin content to those permissions
+2. Grant admin consent to those permissions
 3. In that app registration, click the "Certificates & secrets" tab, then click the "Federated credentials" tab, and click "Add credential"
 4. Choose "Other issuer" from the "Federated credential scenario" dropdown.
 5. Set Issuer to https://token.actions.githubusercontent.com

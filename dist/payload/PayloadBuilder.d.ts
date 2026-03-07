@@ -21,10 +21,10 @@ export declare class PayloadBuilder {
     /**
      * Build a per-user ProcessContentRequest for inline PC calls.
      */
-    buildPerUserProcessContentRequest(file: FileMetadata, prInfo: PrInfo, conversationId: string, messageId: number): ProcessContentRequest;
+    buildPerUserProcessContentRequest(file: FileMetadata, conversationId: string, messageId: number): ProcessContentRequest;
     private matchActivity;
     buildUploadSignalRequest(files: FileMetadata[], prInfo: PrInfo): UploadSignalRequest[];
-    buildProcessContentBatchRequest(files: FileMetadata[], prInfo: PrInfo): ProcessContentBatchRequest;
+    buildProcessContentBatchRequest(files: FileMetadata[]): ProcessContentBatchRequest;
     private createContentToProcess;
     private createMetadataMessage;
     private createFileMessages;

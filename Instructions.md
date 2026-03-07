@@ -56,7 +56,7 @@ Before you begin, make sure you have the following:
    - `Content.Process.User`
    - `ProtectionScopes.Compute.All`
 9. If the committers to your repo will be using email addresses associated with your tenant, add the `User.Read.All` Application permission.
-9. Click **Grant admin consent for \<your tenant\>** and confirm.
+10. Click **Grant admin consent for \<your tenant\>** and confirm.
 
 ---
 

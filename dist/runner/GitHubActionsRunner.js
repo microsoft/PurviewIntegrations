@@ -153,7 +153,7 @@ class GitHubActionsRunner {
                             const conversationId = crypto.randomUUID();
                             for (let i = 0; i < userFiles.length; i++) {
                                 const file = userFiles[i];
-                                const pcRequest = this.payloadBuilder.buildPerUserProcessContentRequest(file, prInfo, conversationId, i);
+                                const pcRequest = this.payloadBuilder.buildPerUserProcessContentRequest(file, conversationId, i);
                                 let pcResponse = await this.purviewClient.processContent(userId, pcRequest, scopeIdentifier, true);
                                 if (!pcResponse.success) {
                                     this.logger.error(`PC failed for file ${file.path}: ${pcResponse.error}. Falling back to contentActivities.`);
@@ -192,7 +192,7 @@ class GitHubActionsRunner {
                         else {
                             // evaluateOffline → PCA batch (fire-and-forget)
                             this.logger.info(`evaluateOffline: sending ${userFiles.length} file(s) to PCA batch for user ${userId}`);
-                            const pcaBatchRequest = this.payloadBuilder.buildProcessContentBatchRequest(userFiles, prInfo);
+                            const pcaBatchRequest = this.payloadBuilder.buildProcessContentBatchRequest(userFiles);
                             const pcaResult = await this.purviewClient.processContentAsync(pcaBatchRequest);
                             if (!pcaResult.success) {
                                 this.logger.error(`PCA batch failed for user ${userId}: ${pcaResult.error}. Falling back to contentActivities.`);

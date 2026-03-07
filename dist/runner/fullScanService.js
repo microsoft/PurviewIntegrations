@@ -280,7 +280,7 @@ class FullScanService {
                 continue;
             }
             // User has scopes → send PCA batch
-            const pcaBatchRequest = this.payloadBuilder.buildProcessContentBatchRequest(userFiles, prInfo);
+            const pcaBatchRequest = this.payloadBuilder.buildProcessContentBatchRequest(userFiles);
             this.logger.info(`Full scan: sending ${userFiles.length} file(s) to PCA batch for user ${userId}`);
             const pcaResult = await this.purviewClient.processContentAsync(pcaBatchRequest);
             if (!pcaResult.success) {

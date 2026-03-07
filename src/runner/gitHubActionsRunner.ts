@@ -148,7 +148,7 @@ export class GitHubActionsRunner {
 
               for (let i = 0; i < userFiles.length; i++) {
                 const file = userFiles[i]!;
-                const pcRequest = this.payloadBuilder.buildPerUserProcessContentRequest(file, prInfo, conversationId, i);
+                const pcRequest = this.payloadBuilder.buildPerUserProcessContentRequest(file, conversationId, i);
 
                 let pcResponse = await this.purviewClient.processContent(userId, pcRequest, scopeIdentifier, true);
 
@@ -193,7 +193,7 @@ export class GitHubActionsRunner {
             } else {
               // evaluateOffline → PCA batch (fire-and-forget)
               this.logger.info(`evaluateOffline: sending ${userFiles.length} file(s) to PCA batch for user ${userId}`);
-              const pcaBatchRequest = this.payloadBuilder.buildProcessContentBatchRequest(userFiles, prInfo);
+              const pcaBatchRequest = this.payloadBuilder.buildProcessContentBatchRequest(userFiles);
               const pcaResult = await this.purviewClient.processContentAsync(pcaBatchRequest);
 
               if (!pcaResult.success) {
