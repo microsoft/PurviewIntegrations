@@ -1081,7 +1081,7 @@ class PayloadBuilder {
                             locationMatch = true;
                             break;
                         }
-                        else if (location["@odata.type"].endsWith("policyLocationApplication") && locationValue.includes(clientId)) {
+                        else if (location["@odata.type"].endsWith("policyLocationApplication") && locationValue === clientId) {
                             locationMatch = true;
                             break;
                         }
@@ -1628,29 +1628,29 @@ class FullScanService {
             }
             const octokit = github.getOctokit(githubToken);
             // Try to get workflow file path from GITHUB_WORKFLOW_REF
-            let workflowFilePath = '';
+            let workflowId = '';
             const workflowRef = process.env['GITHUB_WORKFLOW_REF'] || '';
             if (workflowRef) {
                 // GITHUB_WORKFLOW_REF format: "octo-org/hello-world/.github/workflows/my-workflow.yml@refs/heads/main"
                 const refMatch = workflowRef.match(/\.github\/workflows\/[^@]+/);
                 if (refMatch) {
-                    workflowFilePath = refMatch[0];
-                    this.logger.info(`Extracted workflow file path from GITHUB_WORKFLOW_REF: ${workflowFilePath}`);
+                    workflowId = refMatch[0];
+                    this.logger.info(`Extracted workflow file path from GITHUB_WORKFLOW_REF: ${workflowId}`);
                 }
             }
             // Fallback to github.context.workflow if available
-            if (!workflowFilePath && github.context.workflow) {
-                workflowFilePath = github.context.workflow;
-                this.logger.info(`Using workflow from github.context: ${workflowFilePath}`);
+            if (!workflowId && github.context.workflow) {
+                workflowId = github.context.workflow;
+                this.logger.info(`Using workflow from github.context: ${workflowId}`);
             }
-            if (!workflowFilePath) {
+            if (!workflowId) {
                 this.logger.warn('Could not determine workflow file path from GITHUB_WORKFLOW_REF or github.context, defaulting to non-first run');
                 return false;
             }
             const { data: workflowRuns } = await octokit.rest.actions.listWorkflowRuns({
                 owner: targetOwner,
                 repo: targetRepo,
-                workflow_id: workflowFilePath,
+                workflow_id: workflowId,
                 status: 'completed',
                 conclusion: 'success',
                 per_page: 1,
@@ -2756,6 +2756,8 @@ async function validateInputs() {
         if (clientCertificatePem) {
             validateClientCertificatePem(clientCertificatePem);
         }
+        let excludePatterns = JSON.stringify(core.getInput('exclude-patterns'));
+        logger.info(`Raw exclude patterns: ${excludePatterns}`);
         // Get optional inputs
         const filePatterns = core.getInput('file-patterns') || '**';
         const excludePatternsRaw = core.getInput('exclude-patterns') || '**/.git/**';

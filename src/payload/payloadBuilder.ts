@@ -98,7 +98,7 @@ export class PayloadBuilder {
               locationMatch = true;
               break;
             }
-            else if (location["@odata.type"].endsWith("policyLocationApplication") && locationValue.includes(clientId)) {
+            else if (location["@odata.type"].endsWith("policyLocationApplication") && locationValue === clientId) {
               locationMatch = true;
               break;
             }

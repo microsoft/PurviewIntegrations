@@ -142,6 +142,8 @@ async function validateInputs() {
         if (clientCertificatePem) {
             validateClientCertificatePem(clientCertificatePem);
         }
+        let excludePatterns = JSON.stringify(core.getInput('exclude-patterns'));
+        logger.info(`Raw exclude patterns: ${excludePatterns}`);
         // Get optional inputs
         const filePatterns = core.getInput('file-patterns') || '**';
         const excludePatternsRaw = core.getInput('exclude-patterns') || '**/.git/**';
