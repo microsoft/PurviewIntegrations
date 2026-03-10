@@ -29,7 +29,7 @@ inputs:
   exclude-patterns:
     description: 'Comma-separated file patterns to exclude from scanning (e.g., "node_modules/**,dist/**")'
     required: false
-    default: ''
+    default: '**/.git/**'
   max-file-size:
     description: 'Maximum file size in bytes to process'
     required: false

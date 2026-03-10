@@ -146,7 +146,7 @@ async function validateInputs() {
         logger.info(`Raw exclude patterns: ${excludePatterns}`);
         // Get optional inputs
         const filePatterns = core.getInput('file-patterns') || '**';
-        const excludePatternsRaw = core.getInput('exclude-patterns') || '**/.git/**';
+        const excludePatternsRaw = core.getInput('exclude-patterns') || '';
         const maxFileSize = parseInt(core.getInput('max-file-size') || '10485760', 10);
         const debug = core.getBooleanInput('debug');
         // (stateRepoBranch and stateRepoToken were read earlier, before users.json loading)
