@@ -86,7 +86,7 @@ class PayloadBuilder {
                             locationMatch = true;
                             break;
                         }
-                        else if (location["@odata.type"].endsWith("policyLocationApplication") && locationValue.includes(clientId)) {
+                        else if (location["@odata.type"].endsWith("policyLocationApplication") && locationValue === clientId) {
                             locationMatch = true;
                             break;
                         }
@@ -139,7 +139,7 @@ class PayloadBuilder {
         }
         this.logger.info(`Files to process: ${filesToProcess.length}, Files to upload: ${filesToUpload.length}`);
         const uploadSignalRequests = filesToUpload.length > 0 ? this.buildUploadSignalRequest(filesToUpload, prInfo) : [];
-        const pcbRequest = filesToProcess.length > 0 ? this.buildProcessContentBatchRequest(filesToProcess, prInfo) : undefined;
+        const pcbRequest = filesToProcess.length > 0 ? this.buildProcessContentBatchRequest(filesToProcess) : undefined;
         return {
             uploadSignalRequests: uploadSignalRequests,
             processContentRequest: pcbRequest
@@ -160,16 +160,24 @@ class PayloadBuilder {
         for (const scope of scopes) {
             // Activity match: check if the scope's activity flag covers our request activity
             const activityMatch = this.matchActivity(scope.activities, requestActivity);
+            const clientId = this.config.clientId.toLowerCase();
+            const requestLocationType = requestLocation["@odata.type"].split(".").pop()?.toLowerCase() || "";
             // Location match: check OData type suffix + exact value
             let locationMatch = false;
             if (requestLocation) {
                 for (const loc of scope.locations || []) {
-                    if (loc["@odata.type"] &&
-                        requestLocation["@odata.type"] &&
-                        loc["@odata.type"].toLowerCase().endsWith(requestLocation["@odata.type"].split(".").pop()?.toLowerCase() || "") &&
-                        loc.value === requestLocation.value) {
-                        locationMatch = true;
-                        break;
+                    if (loc["@odata.type"] && requestLocationType) {
+                        const locDataType = loc["@odata.type"].toLowerCase();
+                        // Match if both properties of scope location match request location
+                        if (locDataType.endsWith(requestLocationType) && loc.value.toLowerCase() === requestLocation.value.toLowerCase()) {
+                            locationMatch = true;
+                            break;
+                        }
+                        // Or match if the location is a policyLocationApplication with a clientId match
+                        else if (locDataType.endsWith("policylocationapplication") && loc.value.toLowerCase() === clientId) {
+                            locationMatch = true;
+                            break;
+                        }
                     }
                 }
             }
@@ -190,8 +198,8 @@ class PayloadBuilder {
     /**
      * Build a per-user ProcessContentRequest for inline PC calls.
      */
-    buildPerUserProcessContentRequest(file, prInfo, conversationId, messageId) {
-        const contentToProcess = this.createContentToProcess(file, prInfo, conversationId, messageId);
+    buildPerUserProcessContentRequest(file, conversationId, messageId) {
+        const contentToProcess = this.createContentToProcess(file, conversationId, messageId);
         return { contentToProcess };
     }
     matchActivity(scopeActivities, requestActivity) {
@@ -213,7 +221,7 @@ class PayloadBuilder {
         let conversationId = crypto.randomUUID();
         files.forEach((file, index) => {
             this.logger.info(`Building upload signal request for file: ${file.path}`);
-            const contentToProcess = this.createContentToProcess(file, prInfo, conversationId, index);
+            const contentToProcess = this.createContentToProcess(file, conversationId, index);
             const userId = file.authorId || this.config.userId;
             const signalRequest = {
                 id: crypto.randomUUID(),
@@ -226,11 +234,11 @@ class PayloadBuilder {
         });
         return requests;
     }
-    buildProcessContentBatchRequest(files, prInfo) {
+    buildProcessContentBatchRequest(files) {
         const items = [];
         const conversationId = crypto.randomUUID();
         files.forEach((file, index) => {
-            const contentToProcess = this.createContentToProcess(file, prInfo, conversationId, index);
+            const contentToProcess = this.createContentToProcess(file, conversationId, index);
             items.push({
                 contentToProcess: contentToProcess,
                 userId: file.authorId || this.config.userId,
@@ -239,26 +247,7 @@ class PayloadBuilder {
         });
         return { processContentRequests: items };
     }
-    createContentToProcess(file, prInfo, conversationId, messageId) {
-        let prMetadata = {
-            fileName: file.path,
-            prId: this.config.repository.runId,
-            repoOwner: this.config.repository.owner,
-            repoName: this.config.repository.repo,
-            branchName: prInfo.head,
-            baseName: prInfo.base,
-            title: prInfo.title,
-            commitSha: this.config.repository.sha,
-            fileSize: file.size,
-            authorLogin: file.authorLogin || prInfo.authorLogin,
-            authorEmail: file.authorEmail || prInfo.authorEmail,
-            commitTimestamp: file.commitTimestamp,
-            numberOfDeletions: file.numberOfDeletions || 0,
-            numberOfAdditions: file.numberOfAdditions || 0,
-            numberOfChanges: file.numberOfChanges || 0,
-            typeOfChange: file.typeOfChange || "unknown"
-        };
-        const serializedData = JSON.stringify(prMetadata);
+    createContentToProcess(file, conversationId, messageId) {
         let userId = file.authorId;
         if (!userId) {
             this.logger.warn(`No user ID found for file: ${file.path} with author ${file.authorEmail}}, using default user ID`);
@@ -296,8 +285,8 @@ class PayloadBuilder {
                 name: "Github",
                 version: "0.0.1",
                 applicationLocation: {
-                    "@odata.type": "microsoft.graph.policyLocationApplication",
-                    value: serializedData,
+                    "@odata.type": "microsoft.graph.policyLocationDomain",
+                    value: `https://${PayloadBuilder.domain}`
                 }
             }
         };

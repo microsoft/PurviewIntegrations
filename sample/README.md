@@ -21,8 +21,8 @@ See [.github/workflows/purview-scan.yml](.github/workflows/purview-scan.yml). It
 |-----------|-------------|---------|
 | `client-certificate` | PEM containing private key + certificate. If omitted, GitHub OIDC federated credentials are used. | — |
 | `users-json-path` | Path to `users.json` (relative to workspace root) that maps commit author emails to Azure AD user IDs. | `users.json` |
-| `file-patterns` | Comma-separated glob patterns of files to scan. | `*` |
-| `exclude-patterns` | Comma-separated glob patterns of files to exclude. | empty |
+| `file-patterns` | Comma-separated glob patterns of files to scan. | `**` |
+| `exclude-patterns` | Comma-separated glob patterns of files to exclude. | `**/.git/**` |
 | `max-file-size` | Maximum file size in bytes to process. | `10485760` (10 MB) |
 | `state-repo-token` | Token with `contents:write` access to this repo. Enables first-run detection so the action performs a full scan once, then only scans deltas. | — |
 | `state-repo-branch` | Branch where the state marker file is written. | repo default branch |

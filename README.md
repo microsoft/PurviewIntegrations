@@ -21,7 +21,8 @@ A GitHub Action that scans repository files and sends them to Azure Purview for 
   * ContentActivity.Write (Application)
   * Content.Process.User (Application)
   * ProtectionScopes.Compute.All (Application)
-2. Grant admin content to those permissions
+  * (Optional, used for user id lookup) User.Read.All (Application)
+2. Grant admin consent to those permissions
 3. In that app registration, click the "Certificates & secrets" tab, then click the "Federated credentials" tab, and click "Add credential"
 4. Choose "Other issuer" from the "Federated credential scenario" dropdown.
 5. Set Issuer to https://token.actions.githubusercontent.com
@@ -39,11 +40,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:  # Allow manual triggering for full scans
 
 permissions:
   id-token: write
   contents: read
-  pull-requests: read
+  pull-requests: write
+  actions: read
 
 jobs:
   scan:
@@ -59,7 +62,7 @@ jobs:
           client-certificate: ${{ secrets.AZURE_CLIENT_CERTIFICATE }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           users-json-path: 'users.json'
-          file-patterns: '*'
+          file-patterns: '**'
           debug: true
 ```
 
@@ -91,8 +94,8 @@ For each commit author, the action checks the email against the `users` array. I
 | `users-json-path` | Path to `users.json` in the workflow-definition repo (relative to repo root). In cross-repo workflows the file is fetched via the GitHub API using `state-repo-token`. | No | `users.json` |
 | `purview-account-name` | Name of the Purview account | No | - |
 | `purview-endpoint` | Purview API endpoint URL | No | `https://graph.microsoft.com/v1.0` |
-| `file-patterns` | Comma-separated file patterns to scan | No | `*` |
-| `exclude-patterns` | Comma-separated file patterns to exclude from scanning | No | empty |
+| `file-patterns` | Comma-separated file patterns to scan | No | `**` |
+| `exclude-patterns` | Comma-separated file patterns to exclude from scanning | No | `**/.git/**` |
 | `max-file-size` | Maximum file size in bytes | No | `10485760` (10MB) |
 | `debug` | Enable debug logging | No | `false` |
 | `state-repo-branch` | Branch in the workflow-definition repo where the state marker is written | No | repo default branch |
@@ -135,6 +138,28 @@ with:
 ### First-run state tracking
 
 When `state-repo-token` is provided, the action stores a marker file (`.purview/state/<owner>-<repo>.json`) in the workflow-definition repo. On the first run it performs a full repository scan; subsequent runs only process changed files. The scanned repository only needs `contents: read` — the action never writes files back into it.
+
+If state repo tracking is not configured, the action queries the repo's workflow history to check if it has been run before. If the action has not been run before, or if previous runs have all failed, it will perform a full scan.
+
+### Manual full scan
+
+You can trigger a complete repository scan by running the workflow manually via `workflow_dispatch`. This is useful when:
+
+- You want to re-scan all files after updating Purview policies
+- You need to ensure full compliance after security changes
+- You're troubleshooting issues and want to reprocess everything
+
+Simply add `workflow_dispatch` to your workflow triggers and run it manually from the GitHub Actions tab:
+
+```yaml
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:  # Enables manual triggering for full scans
+```
+
+When triggered via `workflow_dispatch`, the action will automatically perform a full repository scan regardless of state tracking.
 
 ## Outputs
 

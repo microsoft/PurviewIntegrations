@@ -6,6 +6,7 @@ export declare class GitHubActionsRunner {
     private readonly fileProcessor;
     private readonly purviewClient;
     private readonly payloadBuilder;
+    private readonly fullScanService;
     constructor(config: ActionConfig);
     execute(): Promise<void>;
     private sendContentActivities;

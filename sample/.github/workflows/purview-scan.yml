@@ -33,8 +33,8 @@ jobs:
           users-json-path: 'users.json'
 
           # File scanning
-          file-patterns: '*'
-          exclude-patterns: ''
+          file-patterns: '**'
+          exclude-patterns: '**/.git/**'
           max-file-size: '10485760'
 
           # First-run state tracking

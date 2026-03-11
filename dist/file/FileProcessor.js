@@ -157,9 +157,13 @@ class FileProcessor {
             ? true
             : includePatterns.some(p => (0, minimatch_1.minimatch)(normalized, p, { dot: true }));
         if (!included) {
+            this.logger.info(`Excluding file '${path}' because it does not match any include patterns.`);
             return false;
         }
         const excluded = excludePatterns.some(p => (0, minimatch_1.minimatch)(normalized, p, { dot: true }));
+        if (excluded) {
+            this.logger.info(`Excluding file '${path}' due to exclude pattern match.`);
+        }
         return !excluded;
     }
     async getChangedFiles() {
@@ -314,10 +318,12 @@ class FileProcessor {
             this.logger.warn(`No files found in commit: ${commit.sha}`);
             return [];
         }
+        this.logger.info(`Processing commit ${commit.sha} with ${commit.files.length} changed file(s).`);
         let fileMetadata = [];
         const token = await this.authService.getToken();
         this.purviewClient.setAuthToken(token.accessToken);
         const filteredCommitFiles = commit.files.filter(f => this.shouldIncludePath(f.filename));
+        this.logger.info(`Commit ${commit.sha}: ${filteredCommitFiles.length}/${commit.files.length} files match the configured patterns.`);
         for (const file of filteredCommitFiles) {
             const metadata = {
                 path: file.filename,
