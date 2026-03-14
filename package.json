@@ -21,22 +21,21 @@
   "author": "Microsoft",
   "license": "MIT",
   "dependencies": {
-    "@actions/core": "^1.10.1",
-    "@actions/github": "^6.0.0",
-    "@actions/glob": "^0.4.0",
-    "@azure/msal-node": "^3.6.4",
-    "axios": "^1.11.0",
+    "@actions/core": "^3.0.0",
+    "@actions/github": "^9.0.0",
+    "@actions/glob": "^0.6.1",
+    "@azure/msal-node": "^5.1.0",
+    "axios": "^1.13.6",
     "is-binary-path": "^3.0.0",
-    "minimatch": "^10.0.1"
+    "minimatch": "^10.2.4"
   },
   "devDependencies": {
-    "@types/axios": "^0.14.4",
-    "@types/is-binary-path": "^2.1.0",
+    "@octokit/types": "^16.0.0",
     "@types/jest": "^30.0.0",
-    "@types/node": "^20.10.0",
-    "@vercel/ncc": "^0.38.1",
-    "jest": "^30.0.5",
-    "ts-jest": "^29.4.0",
-    "typescript": "^5.3.0"
+    "@types/node": "^25.5.0",
+    "@vercel/ncc": "^0.38.4",
+    "jest": "^30.3.0",
+    "ts-jest": "^29.4.6",
+    "typescript": "^5.9.3"
   }
 }

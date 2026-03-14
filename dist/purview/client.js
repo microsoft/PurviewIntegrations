@@ -1,11 +1,5 @@
-"use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.postToPurview = postToPurview;
-const axios_1 = __importDefault(require("axios"));
-async function postToPurview(payload, token, config, logger, maxRetries = 3) {
+import axios from 'axios';
+export async function postToPurview(payload, token, config, logger, maxRetries = 3) {
     const groupId = payload.messageGroups?.[0]?.messageGroupId ?? null;
     logger.startGroup(`Submitting Batch to Purview API (Group ID: ${groupId})`);
     logger.debug(`Endpoint: ${config.endpoint}`);
@@ -29,7 +23,7 @@ async function postToPurview(payload, token, config, logger, maxRetries = 3) {
         logger.info(`Attempting to POST to Purview API (Attempt ${attempt}/${maxRetries})...`);
         try {
             const startTime = Date.now();
-            const response = await axios_1.default.post(config.endpoint, payload, {
+            const response = await axios.post(config.endpoint, payload, {
                 headers: {
                     'Authorization': `Bearer ${token}`,
                     'Content-Type': 'application/json; charset=utf-8',

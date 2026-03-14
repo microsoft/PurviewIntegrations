@@ -1,45 +1,9 @@
-"use strict";
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.validateInputs = validateInputs;
-const core = __importStar(require("@actions/core"));
-const github = __importStar(require("@actions/github"));
-const logger_1 = require("../utils/logger");
-const workflowRepo_1 = require("../utils/workflowRepo");
-async function validateInputs() {
-    const logger = new logger_1.Logger('InputValidator');
+import * as core from '@actions/core';
+import * as github from '@actions/github';
+import { Logger } from '../utils/logger';
+import { tryParseWorkflowRepoFromEnv } from '../utils/workflowRepo';
+export async function validateInputs() {
+    const logger = new Logger('InputValidator');
     try {
         // Get and validate required inputs
         const clientId = core.getInput('client-id', { required: true });
@@ -60,7 +24,7 @@ async function validateInputs() {
         // local filesystem ($GITHUB_WORKSPACE).
         let userId;
         let userMappings;
-        const workflowRepo = (0, workflowRepo_1.tryParseWorkflowRepoFromEnv)();
+        const workflowRepo = tryParseWorkflowRepoFromEnv();
         const { context } = github;
         const targetRepoFullName = `${context.repo.owner}/${context.repo.repo}`.toLowerCase();
         const workflowRepoFullName = workflowRepo
@@ -106,8 +70,8 @@ async function validateInputs() {
         }
         else {
             // Local filesystem fallback (same-repo workflow or no token)
-            const fs = await Promise.resolve().then(() => __importStar(require('fs')));
-            const path = await Promise.resolve().then(() => __importStar(require('path')));
+            const fs = await import('fs');
+            const path = await import('path');
             const absPath = path.default.isAbsolute(usersJsonPath)
                 ? usersJsonPath
                 : path.default.join(process.env['GITHUB_WORKSPACE'] || process.cwd(), usersJsonPath);

@@ -1,44 +1,8 @@
-"use strict";
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.AuthenticationService = void 0;
-const core = __importStar(require("@actions/core"));
-const msal_node_1 = require("@azure/msal-node");
-const crypto_1 = require("crypto");
-const logger_1 = require("../utils/logger");
-class AuthenticationService {
+import * as core from '@actions/core';
+import { ConfidentialClientApplication } from '@azure/msal-node';
+import { X509Certificate, createHash } from 'crypto';
+import { Logger } from '../utils/logger';
+export class AuthenticationService {
     config;
     logger;
     msalApp;
@@ -46,14 +10,14 @@ class AuthenticationService {
     authMode;
     constructor(config) {
         this.config = config;
-        this.logger = new logger_1.Logger('AuthenticationService');
+        this.logger = new Logger('AuthenticationService');
         const authority = `https://login.microsoftonline.com/${this.config.tenantId}`;
         const clientCertificatePem = this.config.clientCertificatePem?.trim();
         if (clientCertificatePem) {
             const clientCertificate = this.buildClientCertificateConfig(clientCertificatePem);
             this.authMode = 'certificate';
             this.logger.info('Authentication mode: certificate');
-            this.msalApp = new msal_node_1.ConfidentialClientApplication({
+            this.msalApp = new ConfidentialClientApplication({
                 auth: {
                     clientId: this.config.clientId,
                     authority,
@@ -65,7 +29,7 @@ class AuthenticationService {
             this.authMode = 'federated';
             this.logger.info('Authentication mode: federated (GitHub OIDC)');
             // Initialize MSAL application with federated credential configuration
-            this.msalApp = new msal_node_1.ConfidentialClientApplication({
+            this.msalApp = new ConfidentialClientApplication({
                 auth: {
                     clientId: this.config.clientId,
                     authority,
@@ -142,8 +106,8 @@ class AuthenticationService {
     buildClientCertificateConfig(pem) {
         const privateKey = this.extractPemBlock(pem, /-----BEGIN (?:RSA |EC )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC )?PRIVATE KEY-----/m, 'PRIVATE KEY');
         const certificate = this.extractPemBlock(pem, /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/m, 'CERTIFICATE');
-        const x509 = new crypto_1.X509Certificate(certificate);
-        const thumbprint = (0, crypto_1.createHash)('sha1').update(x509.raw).digest('hex').toUpperCase();
+        const x509 = new X509Certificate(certificate);
+        const thumbprint = createHash('sha1').update(x509.raw).digest('hex').toUpperCase();
         return {
             thumbprint,
             privateKey
@@ -157,5 +121,4 @@ class AuthenticationService {
         return match[0].trim();
     }
 }
-exports.AuthenticationService = AuthenticationService;
 //# sourceMappingURL=authenticationService.js.map

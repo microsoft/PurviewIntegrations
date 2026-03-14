@@ -1,51 +1,15 @@
-"use strict";
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.GitHubActionsRunner = void 0;
-const core = __importStar(require("@actions/core"));
-const github = __importStar(require("@actions/github"));
-const types_1 = require("../config/types");
-const authenticationService_1 = require("../auth/authenticationService");
-const fileProcessor_1 = require("../file/fileProcessor");
-const purviewClient_1 = require("../api/purviewClient");
-const payloadBuilder_1 = require("../payload/payloadBuilder");
-const logger_1 = require("../utils/logger");
-const blockDetector_1 = require("../utils/blockDetector");
-const prCommentService_1 = require("../utils/prCommentService");
-const fullScanService_1 = require("./fullScanService");
-class GitHubActionsRunner {
+import * as core from '@actions/core';
+import * as github from '@actions/github';
+import { ExecutionMode, Activity } from '../config/types';
+import { AuthenticationService } from '../auth/authenticationService';
+import { FileProcessor } from '../file/fileProcessor';
+import { PurviewClient } from '../api/purviewClient';
+import { PayloadBuilder } from '../payload/payloadBuilder';
+import { Logger } from '../utils/logger';
+import { isBlocked, getBlockingActions } from '../utils/blockDetector';
+import { PrCommentService } from '../utils/prCommentService';
+import { FullScanService } from './fullScanService';
+export class GitHubActionsRunner {
     config;
     logger;
     authService;
@@ -55,12 +19,12 @@ class GitHubActionsRunner {
     fullScanService;
     constructor(config) {
         this.config = config;
-        this.logger = new logger_1.Logger('GitHubActionsRunner');
-        this.authService = new authenticationService_1.AuthenticationService(this.config);
-        this.fileProcessor = new fileProcessor_1.FileProcessor(this.config);
-        this.purviewClient = new purviewClient_1.PurviewClient(this.config);
-        this.payloadBuilder = new payloadBuilder_1.PayloadBuilder(this.config);
-        this.fullScanService = new fullScanService_1.FullScanService(this.config, this.fileProcessor, this.purviewClient, this.payloadBuilder);
+        this.logger = new Logger('GitHubActionsRunner');
+        this.authService = new AuthenticationService(this.config);
+        this.fileProcessor = new FileProcessor(this.config);
+        this.purviewClient = new PurviewClient(this.config);
+        this.payloadBuilder = new PayloadBuilder(this.config);
+        this.fullScanService = new FullScanService(this.config, this.fileProcessor, this.purviewClient, this.payloadBuilder);
     }
     async execute() {
         try {
@@ -139,7 +103,7 @@ class GitHubActionsRunner {
                             continue;
                         }
                         // Check applicable scopes
-                        const scopeCheck = this.payloadBuilder.checkApplicableScopes(psResponse.value, types_1.Activity.uploadText, requestLocation);
+                        const scopeCheck = this.payloadBuilder.checkApplicableScopes(psResponse.value, Activity.uploadText, requestLocation);
                         if (!scopeCheck.shouldProcess) {
                             // No matching scopes → contentActivities (fire-and-forget)
                             this.logger.info(`No matching scopes for user ${userId}, routing ${userFiles.length} file(s) to contentActivities`);
@@ -147,7 +111,7 @@ class GitHubActionsRunner {
                             continue;
                         }
                         // Matching scopes found — route based on execution mode
-                        if (scopeCheck.executionMode === types_1.ExecutionMode.evaluateInline) {
+                        if (scopeCheck.executionMode === ExecutionMode.evaluateInline) {
                             // evaluateInline → per-user PC, synchronous, parse for blocks
                             this.logger.info(`evaluateInline: calling processContent for ${userFiles.length} file(s), user ${userId}`);
                             const conversationId = crypto.randomUUID();
@@ -178,8 +142,8 @@ class GitHubActionsRunner {
                                 }
                                 // Check for block actions
                                 const responseData = pcResponse.data;
-                                if (responseData && (0, blockDetector_1.isBlocked)(responseData)) {
-                                    const blockingActions = (0, blockDetector_1.getBlockingActions)(responseData);
+                                if (responseData && isBlocked(responseData)) {
+                                    const blockingActions = getBlockingActions(responseData);
                                     this.logger.warn(`BLOCKED: File ${file.path} blocked by ${blockingActions.length} policy action(s)`);
                                     blockedFiles.push({
                                         filePath: file.path,
@@ -209,7 +173,7 @@ class GitHubActionsRunner {
                             const prNumber = parseInt(prInfo.url?.split('/').pop() || '0', 10);
                             if (githubToken && prNumber > 0) {
                                 const octokit = github.getOctokit(githubToken);
-                                const prCommentService = new prCommentService_1.PrCommentService(octokit, this.config.repository.owner, this.config.repository.repo, prNumber);
+                                const prCommentService = new PrCommentService(octokit, this.config.repository.owner, this.config.repository.repo, prNumber);
                                 await prCommentService.postBlockedFilesReview(blockedFiles);
                             }
                             else {
@@ -278,5 +242,4 @@ class GitHubActionsRunner {
         await summary.write();
     }
 }
-exports.GitHubActionsRunner = GitHubActionsRunner;
 //# sourceMappingURL=gitHubActionsRunner.js.map

@@ -1,8 +1,5 @@
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.RetryHandler = void 0;
-const logger_1 = require("./logger");
-class RetryHandler {
+import { Logger } from './logger';
+export class RetryHandler {
     logger;
     defaultOptions = {
         maxAttempts: 3,
@@ -12,7 +9,7 @@ class RetryHandler {
         jitter: true
     };
     constructor() {
-        this.logger = new logger_1.Logger('RetryHandler');
+        this.logger = new Logger('RetryHandler');
     }
     async executeWithRetry(operation, operationName, options) {
         const config = { ...this.defaultOptions, ...options };
@@ -90,5 +87,4 @@ class RetryHandler {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
 }
-exports.RetryHandler = RetryHandler;
 //# sourceMappingURL=retryHandler.js.map

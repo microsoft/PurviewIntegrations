@@ -1,9 +1,6 @@
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.PayloadBuilder = void 0;
-const types_1 = require("../config/types");
-const logger_1 = require("../utils/logger");
-class PayloadBuilder {
+import { Activity, ExecutionMode } from '../config/types';
+import { Logger } from '../utils/logger';
+export class PayloadBuilder {
     config;
     logger;
     maxPayloadSize = 1024 * 1024 * 5; // 5MB
@@ -11,7 +8,7 @@ class PayloadBuilder {
     static scopeActivity = "uploadText";
     constructor(config) {
         this.config = config;
-        this.logger = new logger_1.Logger('PayloadBuilder');
+        this.logger = new Logger('PayloadBuilder');
     }
     async build(files) {
         const conversationId = this.generateConversationId();
@@ -156,7 +153,7 @@ class PayloadBuilder {
     checkApplicableScopes(scopes, requestActivity, requestLocation) {
         let shouldProcess = false;
         const dlpActions = [];
-        let executionMode = types_1.ExecutionMode.evaluateOffline;
+        let executionMode = ExecutionMode.evaluateOffline;
         for (const scope of scopes) {
             // Activity match: check if the scope's activity flag covers our request activity
             const activityMatch = this.matchActivity(scope.activities, requestActivity);
@@ -184,8 +181,8 @@ class PayloadBuilder {
             if (activityMatch && locationMatch) {
                 shouldProcess = true;
                 // Sticky upgrade: if any matching scope says evaluateInline, we use inline
-                if (scope.executionMode === types_1.ExecutionMode.evaluateInline) {
-                    executionMode = types_1.ExecutionMode.evaluateInline;
+                if (scope.executionMode === ExecutionMode.evaluateInline) {
+                    executionMode = ExecutionMode.evaluateInline;
                 }
                 if (scope.policyActions) {
                     dlpActions.push(...scope.policyActions);
@@ -205,10 +202,10 @@ class PayloadBuilder {
     matchActivity(scopeActivities, requestActivity) {
         // Map Activity enum to the string used in protection scope responses
         const activityMap = {
-            [types_1.Activity.uploadText]: "uploadtext",
-            [types_1.Activity.uploadFile]: "uploadfile",
-            [types_1.Activity.downloadText]: "downloadtext",
-            [types_1.Activity.downloadFile]: "downloadfile",
+            [Activity.uploadText]: "uploadtext",
+            [Activity.uploadFile]: "uploadfile",
+            [Activity.downloadText]: "downloadtext",
+            [Activity.downloadFile]: "downloadfile",
         };
         const expected = activityMap[requestActivity];
         if (!expected)
@@ -274,7 +271,7 @@ class PayloadBuilder {
                 }
             ],
             activityMetadata: {
-                activity: types_1.Activity.uploadText,
+                activity: Activity.uploadText,
             },
             deviceMetadata: {},
             integratedAppMetadata: {
@@ -410,5 +407,4 @@ class PayloadBuilder {
         return ext ? languageMap[ext] : undefined;
     }
 }
-exports.PayloadBuilder = PayloadBuilder;
 //# sourceMappingURL=payloadBuilder.js.map
