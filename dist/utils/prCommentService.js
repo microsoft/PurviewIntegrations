@@ -1,11 +1,8 @@
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.PrCommentService = void 0;
-const logger_1 = require("./logger");
+import { Logger } from './logger';
 /**
  * Posts PR review comments when ProcessContent returns block actions.
  */
-class PrCommentService {
+export class PrCommentService {
     octokit;
     owner;
     repo;
@@ -16,7 +13,7 @@ class PrCommentService {
         this.owner = owner;
         this.repo = repo;
         this.prNumber = prNumber;
-        this.logger = new logger_1.Logger('PrCommentService');
+        this.logger = new Logger('PrCommentService');
     }
     /**
      * Post a review comment on the PR listing all blocked files with policy details.
@@ -61,5 +58,4 @@ class PrCommentService {
         return lines.join('\n');
     }
 }
-exports.PrCommentService = PrCommentService;
 //# sourceMappingURL=prCommentService.js.map

@@ -1,54 +1,15 @@
-"use strict";
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.FileProcessor = void 0;
-const github = __importStar(require("@actions/github"));
-const glob = __importStar(require("@actions/glob"));
-const fs = __importStar(require("fs"));
-const crypto = __importStar(require("crypto"));
-const child_process_1 = require("child_process");
-const is_binary_path_1 = __importDefault(require("is-binary-path"));
-const minimatch_1 = require("minimatch");
-const logger_1 = require("../utils/logger");
-const purviewClient_1 = require("../api/purviewClient");
-const authenticationService_1 = require("../auth/authenticationService");
-const userResolver_1 = require("../utils/userResolver");
-class FileProcessor {
+import * as github from '@actions/github';
+import * as glob from '@actions/glob';
+import * as fs from 'fs';
+import * as crypto from 'crypto';
+import { execSync } from 'child_process';
+import isBinaryPath from 'is-binary-path';
+import { minimatch } from 'minimatch';
+import { Logger } from '../utils/logger';
+import { PurviewClient } from '../api/purviewClient';
+import { AuthenticationService } from '../auth/authenticationService';
+import { UserResolver } from '../utils/userResolver';
+export class FileProcessor {
     config;
     logger;
     octokit;
@@ -59,11 +20,11 @@ class FileProcessor {
     graphUserIdCache = new Map();
     constructor(config) {
         this.config = config;
-        this.logger = new logger_1.Logger('FileProcessor');
+        this.logger = new Logger('FileProcessor');
         const token = process.env['GITHUB_TOKEN'] || '';
-        this.authService = new authenticationService_1.AuthenticationService(this.config);
+        this.authService = new AuthenticationService(this.config);
         this.octokit = github.getOctokit(token);
-        this.purviewClient = new purviewClient_1.PurviewClient(this.config);
+        this.purviewClient = new PurviewClient(this.config);
     }
     /**
      * Resolve a set of author emails to user IDs.
@@ -76,7 +37,7 @@ class FileProcessor {
         const resolved = {};
         // 1. Resolve from users.json mappings
         if (this.config.userMappings && this.config.userMappings.length > 0) {
-            const userResolver = new userResolver_1.UserResolver({ users: this.config.userMappings, defaultUserId: this.config.userId }, this.logger);
+            const userResolver = new UserResolver({ users: this.config.userMappings, defaultUserId: this.config.userId }, this.logger);
             for (const email of emails) {
                 const id = userResolver.resolve(email);
                 resolved[email] = id;
@@ -155,12 +116,12 @@ class FileProcessor {
         const excludePatterns = (this.config.excludePatterns || []).map(p => p.trim()).filter(Boolean);
         const included = includePatterns.length === 0
             ? true
-            : includePatterns.some(p => (0, minimatch_1.minimatch)(normalized, p, { dot: true }));
+            : includePatterns.some(p => minimatch(normalized, p, { dot: true }));
         if (!included) {
             this.logger.info(`Excluding file '${path}' because it does not match any include patterns.`);
             return false;
         }
-        const excluded = excludePatterns.some(p => (0, minimatch_1.minimatch)(normalized, p, { dot: true }));
+        const excluded = excludePatterns.some(p => minimatch(normalized, p, { dot: true }));
         if (excluded) {
             this.logger.info(`Excluding file '${path}' due to exclude pattern match.`);
         }
@@ -201,7 +162,7 @@ class FileProcessor {
                     continue;
                 }
                 const buffer = fs.readFileSync(filePath);
-                const isBinary = (0, is_binary_path_1.default)(filePath);
+                const isBinary = isBinaryPath(filePath);
                 const encoding = isBinary ? 'base64' : 'utf-8';
                 const content = isBinary ? buffer.toString('base64') : buffer.toString('utf8');
                 const sha = crypto.createHash('sha1').update(buffer).digest('hex');
@@ -244,7 +205,7 @@ class FileProcessor {
         for (const file of files) {
             try {
                 // git log -1 gives the most recent commit that touched the file
-                const email = (0, child_process_1.execSync)(`git log -1 --format=%ae -- "${file.path}"`, { cwd: workspace, encoding: 'utf-8', timeout: 10000 }).trim();
+                const email = execSync(`git log -1 --format=%ae -- "${file.path}"`, { cwd: workspace, encoding: 'utf-8', timeout: 10000 }).trim();
                 if (email) {
                     map[file.path] = email.toLowerCase();
                 }
@@ -322,7 +283,7 @@ class FileProcessor {
         let fileMetadata = [];
         const token = await this.authService.getToken();
         this.purviewClient.setAuthToken(token.accessToken);
-        const filteredCommitFiles = commit.files.filter(f => this.shouldIncludePath(f.filename));
+        const filteredCommitFiles = commit.files.filter((f) => this.shouldIncludePath(f.filename));
         this.logger.info(`Commit ${commit.sha}: ${filteredCommitFiles.length}/${commit.files.length} files match the configured patterns.`);
         for (const file of filteredCommitFiles) {
             const metadata = {
@@ -371,7 +332,7 @@ class FileProcessor {
                 base: before,
                 head: after
             });
-            const commitInfos = comparison.commits.map(commit => ({
+            const commitInfos = comparison.commits.map((commit) => ({
                 sha: commit.sha,
                 email: commit.commit.author?.email || commit.commit.committer?.email || undefined
             }));
@@ -384,7 +345,7 @@ class FileProcessor {
                 repo: this.config.repository.repo,
                 pull_number: github.context.payload.pull_request.number
             });
-            const commitInfos = commits.map(commit => ({
+            const commitInfos = commits.map((commit) => ({
                 sha: commit.sha,
                 email: commit.commit.author?.email || commit.commit.committer?.email || undefined
             }));
@@ -439,8 +400,8 @@ class FileProcessor {
         this.logger.info(`Commit info: ${JSON.stringify(commit)}`);
         // Filter by patterns
         const matchedFiles = files
-            .map(f => f.filename)
-            .filter(filename => this.shouldIncludePath(filename));
+            .map((f) => f.filename)
+            .filter((filename) => this.shouldIncludePath(filename));
         return matchedFiles;
     }
     async getFilesFromPatterns() {
@@ -450,5 +411,4 @@ class FileProcessor {
         return files;
     }
 }
-exports.FileProcessor = FileProcessor;
 //# sourceMappingURL=fileProcessor.js.map

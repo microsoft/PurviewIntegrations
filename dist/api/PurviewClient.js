@@ -1,9 +1,6 @@
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.PurviewClient = void 0;
-const logger_1 = require("../utils/logger");
-const retryHandler_1 = require("../utils/retryHandler");
-class PurviewClient {
+import { Logger } from '../utils/logger';
+import { RetryHandler } from '../utils/retryHandler';
+export class PurviewClient {
     config;
     logger;
     retryHandler;
@@ -11,8 +8,8 @@ class PurviewClient {
     baseUrl;
     constructor(config) {
         this.config = config;
-        this.logger = new logger_1.Logger('PurviewClient');
-        this.retryHandler = new retryHandler_1.RetryHandler();
+        this.logger = new Logger('PurviewClient');
+        this.retryHandler = new RetryHandler();
         this.baseUrl = `${this.config.purviewEndpoint}`;
     }
     setAuthToken(token) {
@@ -254,5 +251,4 @@ class PurviewClient {
         return sanitized.substring(0, 500); // Limit length
     }
 }
-exports.PurviewClient = PurviewClient;
 //# sourceMappingURL=purviewClient.js.map

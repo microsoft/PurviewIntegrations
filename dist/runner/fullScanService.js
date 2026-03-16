@@ -1,44 +1,8 @@
-"use strict";
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.FullScanService = void 0;
-const github = __importStar(require("@actions/github"));
-const logger_1 = require("../utils/logger");
-const stateService_1 = require("../state/stateService");
-const workflowRepo_1 = require("../utils/workflowRepo");
-class FullScanService {
+import * as github from '@actions/github';
+import { Logger } from '../utils/logger';
+import { StateService } from '../state/stateService';
+import { tryParseWorkflowRepoFromEnv } from '../utils/workflowRepo';
+export class FullScanService {
     config;
     fileProcessor;
     purviewClient;
@@ -50,8 +14,8 @@ class FullScanService {
         this.fileProcessor = fileProcessor;
         this.purviewClient = purviewClient;
         this.payloadBuilder = payloadBuilder;
-        this.logger = new logger_1.Logger('FullScanService');
-        this.stateService = new stateService_1.StateService(this.logger);
+        this.logger = new Logger('FullScanService');
+        this.stateService = new StateService(this.logger);
     }
     /**
      * Sets up state tracking configuration and determines if this is the first run
@@ -60,8 +24,8 @@ class FullScanService {
         const targetOwner = this.config.repository.owner;
         const targetRepo = this.config.repository.repo;
         const stateTrackingTokenPresent = !!(this.config.stateRepoToken && this.config.stateRepoToken.length > 0);
-        const statePath = stateService_1.StateService.defaultStatePathForTarget(targetOwner, targetRepo);
-        const workflowRepo = (0, workflowRepo_1.tryParseWorkflowRepoFromEnv)();
+        const statePath = StateService.defaultStatePathForTarget(targetOwner, targetRepo);
+        const workflowRepo = tryParseWorkflowRepoFromEnv();
         if (stateTrackingTokenPresent && !workflowRepo) {
             this.logger.warn('State tracking token provided but GITHUB_WORKFLOW_REF is missing/unparseable; state tracking disabled.');
         }
@@ -325,5 +289,4 @@ class FullScanService {
         }
     }
 }
-exports.FullScanService = FullScanService;
 //# sourceMappingURL=fullScanService.js.map

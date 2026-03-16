@@ -1,6 +1,3 @@
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.tryParseWorkflowRepoFromEnv = tryParseWorkflowRepoFromEnv;
 /**
  * Parse the workflow-definition repository coordinates from the
  * GITHUB_WORKFLOW_REF environment variable.
@@ -11,7 +8,7 @@ exports.tryParseWorkflowRepoFromEnv = tryParseWorkflowRepoFromEnv;
  *
  * Returns undefined when the variable is missing or unparseable.
  */
-function tryParseWorkflowRepoFromEnv() {
+export function tryParseWorkflowRepoFromEnv() {
     const workflowRef = (process.env['GITHUB_WORKFLOW_REF'] || '').trim();
     if (!workflowRef) {
         return undefined;

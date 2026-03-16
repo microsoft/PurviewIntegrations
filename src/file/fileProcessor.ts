@@ -1,4 +1,5 @@
 import * as github from '@actions/github';
+import type { Endpoints } from '@octokit/types';
 import * as glob from '@actions/glob';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
@@ -6,6 +7,12 @@ import { execSync } from 'child_process';
 import isBinaryPath from 'is-binary-path';
 import { minimatch } from 'minimatch';
 import { ActionConfig, FileMetadata, PrInfo, CommitInfo } from '../config/types';
+
+// Type aliases for cleaner code
+type CommitFile = NonNullable<Endpoints['GET /repos/{owner}/{repo}/commits/{ref}']['response']['data']['files']>[number];
+type CommitData = Endpoints['GET /repos/{owner}/{repo}/compare/{base}...{head}']['response']['data']['commits'][number];
+type PullRequestCommit = Endpoints['GET /repos/{owner}/{repo}/pulls/{pull_number}/commits']['response']['data'][number];
+type PullRequestFile = Endpoints['GET /repos/{owner}/{repo}/pulls/{pull_number}/files']['response']['data'][number];
 import { Logger } from '../utils/logger';
 import { PurviewClient } from '../api/purviewClient';
 import { AuthenticationService } from '../auth/authenticationService';
@@ -335,7 +342,7 @@ export class FileProcessor {
     const token = await this.authService.getToken();
     this.purviewClient.setAuthToken(token.accessToken);
 
-    const filteredCommitFiles = commit.files.filter(f => this.shouldIncludePath(f.filename));
+    const filteredCommitFiles = commit.files!.filter((f: CommitFile) => this.shouldIncludePath(f.filename));
 
     this.logger.info(`Commit ${commit.sha}: ${filteredCommitFiles.length}/${commit.files.length} files match the configured patterns.`);
 
@@ -393,7 +400,7 @@ export class FileProcessor {
         head: after
       });
 
-      const commitInfos: CommitInfo[] = comparison.commits.map(commit => ({
+      const commitInfos: CommitInfo[] = comparison.commits.map((commit: CommitData) => ({
         sha: commit.sha,
         email: commit.commit.author?.email || commit.commit.committer?.email || undefined
       }));
@@ -409,7 +416,7 @@ export class FileProcessor {
         pull_number: github.context.payload.pull_request.number
       });
 
-      const commitInfos: CommitInfo[] = commits.map(commit => ({
+      const commitInfos: CommitInfo[] = commits.map((commit: PullRequestCommit) => ({
         sha: commit.sha,
         email: commit.commit.author?.email || commit.commit.committer?.email || undefined
       }));
@@ -482,8 +489,8 @@ export class FileProcessor {
 
     // Filter by patterns
     const matchedFiles = files
-      .map(f => f.filename)
-      .filter(filename => this.shouldIncludePath(filename));
+      .map((f: PullRequestFile) => f.filename)
+      .filter((filename: string) => this.shouldIncludePath(filename));
     
     return matchedFiles;
   }
