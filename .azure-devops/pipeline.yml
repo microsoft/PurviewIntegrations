@@ -14,7 +14,9 @@ extends:
   template: v1/M365.Official.PipelineTemplate.yml@M365GPT
   parameters:
     pool:
-      vmImage: ubuntu-latest
+      name: Azure-Pipelines-1ESPT-ExDShared
+      image: windows-latest
+      os: windows
 
     stages:
       - stage: Test
