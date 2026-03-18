@@ -1,0 +1,40 @@
+trigger:
+  branches:
+    include:
+      - main
+
+resources:
+  repositories:
+    - repository: M365GPT
+      type: git
+      name: 1ESPipelineTemplates/M365GPT
+      ref: refs/tags/release
+
+extends:
+  template: v1/M365.Official.PipelineTemplate.yml@M365GPT
+  parameters:
+    pool:
+      name: Azure-Pipelines-1ESPT-ExDShared
+      image: windows-latest
+      os: windows
+
+    stages:
+      - stage: Test
+        displayName: 'Test Stage'
+        jobs:
+          - job: RunTests
+            displayName: 'Run Tests'
+            steps:
+              - checkout: self
+                clean: true
+
+              - task: NodeTool@0
+                inputs:
+                  versionSpec: '20.x'
+                displayName: Use Node.js 20
+
+              - script: npm install
+                displayName: Install dependencies
+
+              - script: npm test
+                displayName: Run tests
