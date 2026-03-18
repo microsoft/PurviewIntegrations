@@ -33,8 +33,14 @@ extends:
                   versionSpec: '20.x'
                 displayName: Use Node.js 20
 
-              - script: npm install
-                displayName: Install dependencies
+              - task: Npm@1
+                displayName: npm ci
+                inputs:
+                  command: custom
+                  customCommand: 'ci'
 
-              - script: npm test
-                displayName: Run tests
+              - task: Npm@1
+                displayName: npm test
+                inputs:
+                  command: custom
+                  customCommand: 'test'
