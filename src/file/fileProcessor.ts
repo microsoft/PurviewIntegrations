@@ -195,10 +195,16 @@ export class FileProcessor {
           continue;
         }
 
-        const buffer = fs.readFileSync(filePath);
         const isBinary = isBinaryPath(filePath);
         const encoding = isBinary ? 'base64' : 'utf-8';
-        const content = isBinary ? buffer.toString('base64') : buffer.toString('utf8');
+
+        if (isBinary) {
+          this.logger.info(`Skipping binary file: ${filePath}`);
+          continue;
+        }
+
+        const buffer = fs.readFileSync(filePath);
+        const content = buffer.toString('utf8');
         const sha = crypto.createHash('sha1').update(buffer).digest('hex');
 
         result.push({
@@ -347,6 +353,11 @@ export class FileProcessor {
     this.logger.info(`Commit ${commit.sha}: ${filteredCommitFiles.length}/${commit.files.length} files match the configured patterns.`);
 
     for (const file of filteredCommitFiles) {
+      if (isBinaryPath(file.filename)) {
+        this.logger.info(`Skipping binary file: ${file.filename}`);
+        continue;
+      }
+
       const metadata = {
         path: file.filename,
         size: file.patch ? file.patch.length : 0,
