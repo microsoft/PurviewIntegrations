@@ -8,7 +8,8 @@ on:
 permissions:
   id-token: write
   contents: read
-  pull-requests: read
+  pull-requests: write
+  actions: read
 
 jobs:
   scan:

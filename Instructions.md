@@ -17,6 +17,11 @@ This guide walks you through everything needed to connect your GitHub organizati
   - [4. Create the Workflow Repository](#4-create-the-workflow-repository)
   - [5. Add GitHub Secrets](#5-add-github-secrets)
     - [Generating a Certificate for GitHub Secrets](#generating-a-certificate-for-github-secrets)
+    - [Creating the `STATE_REPO_TOKEN`](#creating-the-state_repo_token)
+      - [Option A: Fine-Grained Personal Access Token (Recommended)](#option-a-fine-grained-personal-access-token-recommended)
+      - [Option B: Classic Personal Access Token](#option-b-classic-personal-access-token)
+      - [Store the Token as a GitHub Secret](#store-the-token-as-a-github-secret)
+      - [Using a GitHub App Token (Alternative)](#using-a-github-app-token-alternative)
   - [6. Install the GitHub Action Workflow](#6-install-the-github-action-workflow)
     - [Quick Start: Minimal Workflow](#quick-start-minimal-workflow)
     - [Full Workflow: All Options](#full-workflow-all-options)
@@ -139,6 +144,29 @@ Each organization that uses the Purview action needs the following secrets confi
 3. Set the **Repository access** policy to grant access to the repositories that will run the workflow.
 
 > **Note:** You can also configure these as repository-level secrets under **Repository → Settings → Secrets and variables → Actions** if you prefer per-repo isolation.
+
+### Generating a Certificate for GitHub Secrets
+
+Use the following OpenSSL commands to generate a self-signed certificate suitable for Entra App Registration and GitHub Actions:
+
+```bash
+# 1. Generate a private key
+openssl genrsa -out purview-action.key 2048
+
+# 2. Generate a self-signed certificate (valid for 1 year)
+openssl req -new -x509 -key purview-action.key -out purview-action.crt -days 365 \
+  -subj "/CN=PurviewGitHubAction"
+
+# 3. Combine the private key and certificate into a single PEM file
+#    This combined file is what you store as the AZURE_CLIENT_CERTIFICATE secret
+cat purview-action.key purview-action.crt > purview-action.pem
+
+# 4. (Optional) Verify the certificate
+openssl x509 -in purview-action.crt -text -noout
+```
+
+- Upload `purview-action.crt` to your Entra App Registration under **Certificates & secrets** → **Certificates**.
+- Copy the full contents of `purview-action.pem` and store it as the `AZURE_CLIENT_CERTIFICATE` GitHub secret.
 
 ### Creating the `STATE_REPO_TOKEN`
 
