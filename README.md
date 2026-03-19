@@ -5,7 +5,7 @@ A GitHub Action that scans repository files and sends them to Azure Purview for 
 ## Features
 
 - 🔐 **Secure Authentication**: Uses GitHub OIDC for passwordless Azure authentication
-- 📁 **Smart File Processing**: Automatically detects and processes changed files
+- 📁 **Smart File Processing**: Automatically detects and processes changed files; binary files are skipped
 - 🔄 **Resilient API Integration**: Built-in retry logic with exponential backoff
 - 📊 **Comprehensive Logging**: Detailed execution logs with sensitive data redaction
 - 🚀 **Enterprise Ready**: Handles large repositories with chunking and streaming
@@ -167,7 +167,7 @@ When triggered via `workflow_dispatch`, the action will automatically perform a 
 |--------|-------------|
 | `processed-files` | Number of files successfully processed |
 | `failed-requests` | Number of files that failed processing |
-| `conversation-id` | Purview conversation ID for tracking |
+| `blocked-files` | JSON array of file paths that were blocked by data security policies |
 
 ## Architecture
 
@@ -230,6 +230,7 @@ npm run lint
 - Review file patterns match your repository structure
 - Check file size limits for large files
 - Ensure files are UTF-8 encoded
+- Binary files (images, executables, etc.) are automatically detected and skipped
 
 ## License
 
