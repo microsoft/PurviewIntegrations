@@ -1,0 +1,23 @@
+#!/usr/bin/env sh
+
+# ── Pre-commit hook for GitHub Actions repo ──
+# Ensures dist/ is always rebuilt and up-to-date before committing.
+
+# Exit on any error
+set -e
+
+# 1. Run tests
+echo "🧪 Running tests..."
+npm test
+
+# 2. Build TypeScript and package with ncc
+echo "🔨 Building dist/..."
+npm run build && npm run package
+
+# 3. Stage any dist/ changes so the commit includes the fresh build
+if ! git diff --quiet dist/; then
+  echo "📦 dist/ has changed — staging updated files..."
+  git add dist/
+else
+  echo "✅ dist/ is up-to-date."
+fi
