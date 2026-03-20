@@ -9,7 +9,8 @@
     "test": "npx jest --passWithNoTests",
     "lint": "eslint src/**/*.ts",
     "format": "prettier --write src/**/*.ts",
-    "all": "npm run build && npm run package && npm run test"
+    "all": "npm run build && npm run package && npm run test",
+    "prepare": "husky"
   },
   "keywords": [
     "github",
@@ -34,6 +35,7 @@
     "@types/jest": "^30.0.0",
     "@types/node": "^25.5.0",
     "@vercel/ncc": "^0.38.4",
+    "husky": "^9.1.7",
     "jest": "^30.3.0",
     "ts-jest": "^29.4.6",
     "typescript": "^5.9.3"
