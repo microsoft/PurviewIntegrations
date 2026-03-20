@@ -461,7 +461,8 @@ on:
 permissions:
   id-token: write       # Required for GitHub OIDC token exchange
   contents: read
-  pull-requests: read
+  pull-requests: write  # Required to read pull request metadata and create a comment if anything was blocked
+  actions: read         # Required to read history of previous workflow runs
 
 jobs:
   scan:
