@@ -36,7 +36,6 @@ jobs:
           # File scanning
           file-patterns: '**'
           exclude-patterns: '**/.git/**'
-          max-file-size: '10485760'
 
           # First-run state tracking
           state-repo-token: ${{ secrets.STATE_REPO_TOKEN }}

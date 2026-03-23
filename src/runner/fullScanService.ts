@@ -314,16 +314,19 @@ export class FullScanService {
       }
 
       // User has scopes → send PCA batch
-      const pcaBatchRequest = this.payloadBuilder.buildProcessContentBatchRequest(userFiles);
+      const pcaBatchRequests = this.payloadBuilder.buildProcessContentBatchRequest(userFiles);
       this.logger.info(`Full scan: sending ${userFiles.length} file(s) to PCA batch for user ${userId}`);
-      const pcaResult = await this.purviewClient.processContentAsync(pcaBatchRequest);
+      for (const pcaBatchRequest of pcaBatchRequests) {
+        const pcaResult = await this.purviewClient.processContentAsync(pcaBatchRequest);
 
-      if (!pcaResult.success) {
-        this.logger.error(`PCA batch failed for user ${userId}: ${pcaResult.error}. Falling back to contentActivities.`);
-        failedPayloads.push(`pca-fullscan-${userId}`);
-        await this.sendContentActivities(userFiles, prInfo, failedPayloads);
-      } else {
-        this.logger.info(`Full scan PCA batch completed for user ${userId}`);
+        if (!pcaResult.success) {
+          this.logger.error(`PCA batch failed for user ${userId}: ${pcaResult.error}. Falling back to contentActivities.`);
+          failedPayloads.push(`pca-fullscan-${userId}`);
+          await this.sendContentActivities(userFiles, prInfo, failedPayloads);
+          break;
+        } else {
+          this.logger.info(`Full scan PCA batch completed for user ${userId}`);
+        }
       }
     }
   }

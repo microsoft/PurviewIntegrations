@@ -3,7 +3,7 @@ import { Logger } from '../utils/logger';
 export class PayloadBuilder {
     config;
     logger;
-    maxPayloadSize = 1024 * 1024 * 5; // 5MB
+    maxPayloadSize = 1024 * 1024 * 3; // 3MB
     static domain = "github.com";
     static scopeActivity = "uploadText";
     constructor(config) {
@@ -12,15 +12,41 @@ export class PayloadBuilder {
     }
     async build(files) {
         const conversationId = this.generateConversationId();
-        const messages = [];
+        const allMessages = [];
         // Add metadata message
-        messages.push(this.createMetadataMessage(files));
+        allMessages.push(this.createMetadataMessage(files));
         // Add file messages
         for (const file of files) {
             const fileMessages = await this.createFileMessages(file);
-            messages.push(...fileMessages);
+            allMessages.push(...fileMessages);
         }
-        const payload = {
+        // Split messages into payloads of <= maxPayloadSize
+        const payloads = [];
+        let currentMessages = [];
+        let currentSize = 0;
+        const baseOverhead = 300; // JSON overhead for metadata, conversationId, etc.
+        for (const msg of allMessages) {
+            const msgSize = JSON.stringify(msg).length;
+            if (currentMessages.length > 0 && currentSize + msgSize + baseOverhead > this.maxPayloadSize) {
+                payloads.push(this.createPayloadObject(conversationId, currentMessages, files.length));
+                currentMessages = [];
+                currentSize = 0;
+            }
+            currentMessages.push(msg);
+            currentSize += msgSize;
+        }
+        if (currentMessages.length > 0) {
+            payloads.push(this.createPayloadObject(conversationId, currentMessages, files.length));
+        }
+        this.logger.debug('Payload built', {
+            conversationId,
+            payloadCount: payloads.length,
+            totalMessages: allMessages.length
+        });
+        return payloads;
+    }
+    createPayloadObject(conversationId, messages, fileCount) {
+        return {
             conversationId,
             messages,
             metadata: {
@@ -29,21 +55,9 @@ export class PayloadBuilder {
                 commit: this.config.repository.sha,
                 runId: this.config.repository.runId,
                 timestamp: new Date().toISOString(),
-                fileCount: files.length
+                fileCount
             }
         };
-        // Validate payload size
-        const payloadSize = JSON.stringify(payload).length;
-        if (payloadSize > this.maxPayloadSize) {
-            this.logger.warn('Payload too large, truncating content', { size: payloadSize });
-            return this.truncatePayload(payload);
-        }
-        this.logger.debug('Payload built', {
-            conversationId,
-            messageCount: messages.length,
-            size: payloadSize
-        });
-        return payload;
     }
     buildProtectionScopesRequest() {
         const request = {
@@ -136,10 +150,10 @@ export class PayloadBuilder {
         }
         this.logger.info(`Files to process: ${filesToProcess.length}, Files to upload: ${filesToUpload.length}`);
         const uploadSignalRequests = filesToUpload.length > 0 ? this.buildUploadSignalRequest(filesToUpload, prInfo) : [];
-        const pcbRequest = filesToProcess.length > 0 ? this.buildProcessContentBatchRequest(filesToProcess) : undefined;
+        const pcbRequests = filesToProcess.length > 0 ? this.buildProcessContentBatchRequest(filesToProcess) : [];
         return {
             uploadSignalRequests: uploadSignalRequests,
-            processContentRequest: pcbRequest
+            processContentRequests: pcbRequests
         };
     }
     /**
@@ -196,8 +210,25 @@ export class PayloadBuilder {
      * Build a per-user ProcessContentRequest for inline PC calls.
      */
     buildPerUserProcessContentRequest(file, conversationId, messageId) {
-        const contentToProcess = this.createContentToProcess(file, conversationId, messageId);
-        return { contentToProcess };
+        const content = file.content || `File: ${file.path} (${file.size} bytes)`;
+        const singleCTP = this.createContentToProcess(file, conversationId, messageId);
+        const singleRequest = { contentToProcess: singleCTP };
+        const requestSize = JSON.stringify(singleRequest).length;
+        if (requestSize <= this.maxPayloadSize) {
+            return [singleRequest];
+        }
+        // Split content into chunks that fit within maxPayloadSize
+        const overhead = requestSize - content.length;
+        const maxContentPerChunk = this.maxPayloadSize - overhead - 100; // safety margin
+        const requests = [];
+        for (let i = 0; i < content.length; i += maxContentPerChunk) {
+            const chunk = content.substring(i, Math.min(i + maxContentPerChunk, content.length));
+            const isLastChunk = i + maxContentPerChunk >= content.length;
+            const chunkCTP = this.createContentToProcess(file, conversationId, messageId + requests.length, !isLastChunk, chunk);
+            requests.push({ contentToProcess: chunkCTP });
+        }
+        this.logger.info(`Split file ${file.path} into ${requests.length} processContent request(s)`);
+        return requests;
     }
     matchActivity(scopeActivities, requestActivity) {
         // Map Activity enum to the string used in protection scope responses
@@ -214,37 +245,104 @@ export class PayloadBuilder {
         return scopeStr.includes(expected);
     }
     buildUploadSignalRequest(files, prInfo) {
-        let requests = [];
-        let conversationId = crypto.randomUUID();
-        files.forEach((file, index) => {
+        const requests = [];
+        const conversationId = crypto.randomUUID();
+        let seqNum = 0;
+        for (const file of files) {
             this.logger.info(`Building upload signal request for file: ${file.path}`);
-            const contentToProcess = this.createContentToProcess(file, conversationId, index);
+            const content = file.content || `File: ${file.path} (${file.size} bytes)`;
             const userId = file.authorId || this.config.userId;
-            const signalRequest = {
-                id: crypto.randomUUID(),
-                userId: userId,
-                userEmail: file.authorEmail || prInfo.authorEmail,
-                scopeIdentifier: "",
-                contentMetadata: contentToProcess,
-            };
-            requests.push(signalRequest);
-        });
+            const userEmail = file.authorEmail || prInfo.authorEmail;
+            const singleCTP = this.createContentToProcess(file, conversationId, seqNum);
+            const singleSize = JSON.stringify(singleCTP).length + 200; // account for wrapper fields
+            if (singleSize <= this.maxPayloadSize) {
+                requests.push({
+                    id: crypto.randomUUID(),
+                    userId,
+                    userEmail,
+                    scopeIdentifier: "",
+                    contentMetadata: singleCTP,
+                });
+                seqNum++;
+            }
+            else {
+                // Split content into chunks
+                const overhead = singleSize - content.length;
+                const maxContentPerChunk = this.maxPayloadSize - overhead - 100;
+                for (let i = 0; i < content.length; i += maxContentPerChunk) {
+                    const chunk = content.substring(i, Math.min(i + maxContentPerChunk, content.length));
+                    const isLastChunk = i + maxContentPerChunk >= content.length;
+                    const chunkCTP = this.createContentToProcess(file, conversationId, seqNum, !isLastChunk, chunk);
+                    requests.push({
+                        id: crypto.randomUUID(),
+                        userId,
+                        userEmail,
+                        scopeIdentifier: "",
+                        contentMetadata: chunkCTP,
+                    });
+                    seqNum++;
+                }
+                this.logger.info(`Split file ${file.path} into multiple upload signal request(s)`);
+            }
+        }
         return requests;
     }
     buildProcessContentBatchRequest(files) {
-        const items = [];
+        const allItems = [];
         const conversationId = crypto.randomUUID();
-        files.forEach((file, index) => {
-            const contentToProcess = this.createContentToProcess(file, conversationId, index);
-            items.push({
-                contentToProcess: contentToProcess,
-                userId: file.authorId || this.config.userId,
+        let seqNum = 0;
+        for (const file of files) {
+            const content = file.content || `File: ${file.path} (${file.size} bytes)`;
+            const userId = file.authorId || this.config.userId;
+            const singleCTP = this.createContentToProcess(file, conversationId, seqNum);
+            const singleItem = {
+                contentToProcess: singleCTP,
+                userId,
                 requestId: crypto.randomUUID(),
-            });
-        });
-        return { processContentRequests: items };
+            };
+            const itemSize = JSON.stringify(singleItem).length;
+            if (itemSize <= this.maxPayloadSize) {
+                allItems.push(singleItem);
+                seqNum++;
+            }
+            else {
+                // Single file exceeds limit — split its content into chunks
+                const overhead = itemSize - content.length;
+                const maxContentPerChunk = this.maxPayloadSize - overhead - 100;
+                for (let i = 0; i < content.length; i += maxContentPerChunk) {
+                    const chunk = content.substring(i, Math.min(i + maxContentPerChunk, content.length));
+                    const isLastChunk = i + maxContentPerChunk >= content.length;
+                    const chunkCTP = this.createContentToProcess(file, conversationId, seqNum, !isLastChunk, chunk);
+                    allItems.push({
+                        contentToProcess: chunkCTP,
+                        userId,
+                        requestId: crypto.randomUUID(),
+                    });
+                    seqNum++;
+                }
+            }
+        }
+        // Split items into batches that fit within maxPayloadSize
+        const batches = [];
+        let currentItems = [];
+        let currentSize = 0;
+        const batchOverhead = 50;
+        for (const item of allItems) {
+            const itemSize = JSON.stringify(item).length;
+            if (currentItems.length > 0 && currentSize + itemSize + batchOverhead > this.maxPayloadSize) {
+                batches.push({ processContentRequests: currentItems });
+                currentItems = [];
+                currentSize = 0;
+            }
+            currentItems.push(item);
+            currentSize += itemSize;
+        }
+        if (currentItems.length > 0) {
+            batches.push({ processContentRequests: currentItems });
+        }
+        return batches;
     }
-    createContentToProcess(file, conversationId, messageId) {
+    createContentToProcess(file, conversationId, messageId, isTruncated = false, contentOverride) {
         let userId = file.authorId;
         if (!userId) {
             this.logger.warn(`No user ID found for file: ${file.path} with author ${file.authorEmail}}, using default user ID`);
@@ -253,7 +351,7 @@ export class PayloadBuilder {
         const now = new Date().toISOString();
         let fileContent = {
             "@odata.type": "microsoft.graph.textContent",
-            data: file.content || `File: ${file.path} (${file.size} bytes)`
+            data: contentOverride ?? file.content ?? `File: ${file.path} (${file.size} bytes)`
         };
         return {
             contentEntries: [
@@ -264,7 +362,7 @@ export class PayloadBuilder {
                     correlationId: conversationId,
                     sequenceNumber: messageId,
                     length: file.size,
-                    isTruncated: false,
+                    isTruncated,
                     createdDateTime: now,
                     modifiedDateTime: now,
                     content: fileContent
@@ -345,20 +443,6 @@ export class PayloadBuilder {
             chunks.push(content.substring(i, i + chunkSize));
         }
         return chunks;
-    }
-    truncatePayload(payload) {
-        // Remove content from file messages to reduce size
-        const truncated = { ...payload };
-        truncated.messages = truncated.messages.map(msg => {
-            if (msg.contentType === 'file' && msg.content.length > 1000) {
-                return {
-                    ...msg,
-                    content: msg.content.substring(0, 1000) + '... [truncated]'
-                };
-            }
-            return msg;
-        });
-        return truncated;
     }
     generateConversationId() {
         const timestamp = Date.now();

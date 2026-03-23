@@ -145,61 +145,66 @@ export class GitHubActionsRunner {
               this.logger.info(`evaluateInline: calling processContent for ${userFiles.length} file(s), user ${userId}`);
 
               const conversationId = crypto.randomUUID();
+              let seqNum = 0;
 
-              for (let i = 0; i < userFiles.length; i++) {
-                const file = userFiles[i]!;
-                const pcRequest = this.payloadBuilder.buildPerUserProcessContentRequest(file, conversationId, i);
+              for (const file of userFiles) {
+                const pcRequests = this.payloadBuilder.buildPerUserProcessContentRequest(file, conversationId, seqNum);
+                seqNum += pcRequests.length;
 
-                let pcResponse = await this.purviewClient.processContent(userId, pcRequest, scopeIdentifier, true);
+                for (const pcRequest of pcRequests) {
+                  let pcResponse = await this.purviewClient.processContent(userId, pcRequest, scopeIdentifier, true);
 
-                if (!pcResponse.success) {
-                  this.logger.error(`PC failed for file ${file.path}: ${pcResponse.error}. Falling back to contentActivities.`);
-                  failedPayloads.push(`pc-${file.path}`);
-                  await this.sendContentActivities([file], prInfo, failedPayloads);
-                  continue;
-                }
+                  if (!pcResponse.success) {
+                    this.logger.error(`PC failed for file ${file.path}: ${pcResponse.error}. Falling back to contentActivities.`);
+                    failedPayloads.push(`pc-${file.path}`);
+                    await this.sendContentActivities([file], prInfo, failedPayloads);
+                    continue;
+                  }
 
-                const pcData = pcResponse.data as ProcessContentResponse;
+                  const pcData = pcResponse.data as ProcessContentResponse;
 
-                // Handle protectionScopeState: "modified" → re-fetch scopes and retry
-                if (pcData?.protectionScopeState === 'modified') {
-                  this.logger.info(`Protection scope state modified for user ${userId}, re-fetching scopes and retrying PC for ${file.path}`);
+                  // Handle protectionScopeState: "modified" → re-fetch scopes and retry
+                  if (pcData?.protectionScopeState === 'modified') {
+                    this.logger.info(`Protection scope state modified for user ${userId}, re-fetching scopes and retrying PC for ${file.path}`);
 
-                  const freshPsResponse = await this.purviewClient.searchUserProtectionScope(userId, psRequest);
-                  if (freshPsResponse.success && freshPsResponse.data) {
-                    const freshScopeId = freshPsResponse.etag || '';
-                    pcResponse = await this.purviewClient.processContent(userId, pcRequest, freshScopeId, true);
+                    const freshPsResponse = await this.purviewClient.searchUserProtectionScope(userId, psRequest);
+                    if (freshPsResponse.success && freshPsResponse.data) {
+                      const freshScopeId = freshPsResponse.etag || '';
+                      pcResponse = await this.purviewClient.processContent(userId, pcRequest, freshScopeId, true);
 
-                    if (!pcResponse.success) {
-                      this.logger.error(`PC retry failed for file ${file.path}: ${pcResponse.error}`);
-                      failedPayloads.push(`pc-retry-${file.path}`);
-                      continue;
+                      if (!pcResponse.success) {
+                        this.logger.error(`PC retry failed for file ${file.path}: ${pcResponse.error}`);
+                        failedPayloads.push(`pc-retry-${file.path}`);
+                        continue;
+                      }
                     }
                   }
-                }
 
-                // Check for block actions
-                const responseData = pcResponse.data as ProcessContentResponse;
-                if (responseData && isBlocked(responseData)) {
-                  const blockingActions = getBlockingActions(responseData);
-                  this.logger.warn(`BLOCKED: File ${file.path} blocked by ${blockingActions.length} policy action(s)`);
-                  blockedFiles.push({
-                    filePath: file.path,
-                    userId,
-                    policyActions: blockingActions,
-                  });
+                  // Check for block actions
+                  const responseData = pcResponse.data as ProcessContentResponse;
+                  if (responseData && isBlocked(responseData)) {
+                    const blockingActions = getBlockingActions(responseData);
+                    this.logger.warn(`BLOCKED: File ${file.path} blocked by ${blockingActions.length} policy action(s)`);
+                    blockedFiles.push({
+                      filePath: file.path,
+                      userId,
+                      policyActions: blockingActions,
+                    });
+                  }
                 }
               }
             } else {
               // evaluateOffline → PCA batch (fire-and-forget)
               this.logger.info(`evaluateOffline: sending ${userFiles.length} file(s) to PCA batch for user ${userId}`);
-              const pcaBatchRequest = this.payloadBuilder.buildProcessContentBatchRequest(userFiles);
-              const pcaResult = await this.purviewClient.processContentAsync(pcaBatchRequest);
+              const pcaBatchRequests = this.payloadBuilder.buildProcessContentBatchRequest(userFiles);
+              for (const pcaBatchRequest of pcaBatchRequests) {
+                const pcaResult = await this.purviewClient.processContentAsync(pcaBatchRequest);
 
-              if (!pcaResult.success) {
-                this.logger.error(`PCA batch failed for user ${userId}: ${pcaResult.error}. Falling back to contentActivities.`);
-                failedPayloads.push(`pca-${userId}`);
-                await this.sendContentActivities(userFiles, prInfo, failedPayloads);
+                if (!pcaResult.success) {
+                  this.logger.error(`PCA batch failed for user ${userId}: ${pcaResult.error}. Falling back to contentActivities.`);
+                  failedPayloads.push(`pca-${userId}`);
+                  await this.sendContentActivities(userFiles, prInfo, failedPayloads);
+                }
               }
             }
           }

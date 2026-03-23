@@ -283,7 +283,7 @@ export interface ScopeBase {
     identity: string;
 }
 export interface SplitPCRequests {
-    processContentRequest?: ProcessContentBatchRequest;
+    processContentRequests: ProcessContentBatchRequest[];
     uploadSignalRequests: UploadSignalRequest[];
 }
 export interface ProcessContentRequest {

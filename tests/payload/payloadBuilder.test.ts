@@ -76,8 +76,10 @@ describe('PayloadBuilder', () => {
   describe('build', () => {
     it('builds payload with metadata and file messages', async () => {
       const files = [createFile()];
-      const payload = await builder.build(files);
+      const payloads = await builder.build(files);
 
+      expect(payloads.length).toBeGreaterThanOrEqual(1);
+      const payload = payloads[0]!;
       expect(payload.conversationId).toBeTruthy();
       expect(payload.conversationId).toMatch(/^conv-/);
       expect(payload.messages.length).toBeGreaterThanOrEqual(2); // metadata + file
@@ -92,9 +94,10 @@ describe('PayloadBuilder', () => {
         createFile({ path: 'a.ts', size: 100 }),
         createFile({ path: 'b.js', size: 200 }),
       ];
-      const payload = await builder.build(files);
+      const payloads = await builder.build(files);
 
-      const metadataMsg = payload.messages.find(m => m.contentType === 'metadata');
+      const allMessages = payloads.flatMap(p => p.messages);
+      const metadataMsg = allMessages.find(m => m.contentType === 'metadata');
       expect(metadataMsg).toBeDefined();
       const content = JSON.parse(metadataMsg!.content);
       expect(content.totalFiles).toBe(2);
@@ -104,24 +107,31 @@ describe('PayloadBuilder', () => {
     it('chunks large file content', async () => {
       const largeContent = 'x'.repeat(120000);
       const files = [createFile({ content: largeContent })];
-      const payload = await builder.build(files);
+      const payloads = await builder.build(files);
 
-      const fileMessages = payload.messages.filter(m => m.contentType === 'file');
+      const fileMessages = payloads.flatMap(p => p.messages).filter(m => m.contentType === 'file');
       expect(fileMessages.length).toBeGreaterThan(1);
     });
 
-    it('truncates payload when exceeding 5MB', async () => {
+    it('splits into multiple payloads when exceeding 3MB', async () => {
       const hugeContent = 'y'.repeat(2000000);
       const files = Array.from({ length: 5 }, (_, i) =>
         createFile({ path: `file${i}.ts`, content: hugeContent })
       );
 
-      const payload = await builder.build(files);
-      // After truncation, file contents should be capped
-      const truncatedMessages = payload.messages.filter(
+      const payloads = await builder.build(files);
+      // Should be split into multiple payloads, none truncated
+      expect(payloads.length).toBeGreaterThan(1);
+      for (const payload of payloads) {
+        const payloadSize = JSON.stringify(payload).length;
+        expect(payloadSize).toBeLessThanOrEqual(1024 * 1024 * 3 + 1000); // 3MB + small tolerance for single large messages
+      }
+      // No content should be truncated
+      const allMessages = payloads.flatMap(p => p.messages);
+      const truncatedMessages = allMessages.filter(
         m => m.contentType === 'file' && m.content.includes('[truncated]')
       );
-      expect(truncatedMessages.length).toBeGreaterThan(0);
+      expect(truncatedMessages.length).toBe(0);
     });
   });
 
@@ -285,8 +295,10 @@ describe('PayloadBuilder', () => {
   describe('buildPerUserProcessContentRequest', () => {
     it('builds request with correct content structure', () => {
       const file = createFile({ path: 'test.ts', content: 'const x = 1;', authorId: 'author-1' });
-      const request = builder.buildPerUserProcessContentRequest(file, 'conv-1', 0);
+      const requests = builder.buildPerUserProcessContentRequest(file, 'conv-1', 0);
 
+      expect(requests.length).toBe(1);
+      const request = requests[0]!;
       expect(request.contentToProcess).toBeDefined();
       expect(request.contentToProcess.contentEntries).toHaveLength(1);
       const entry = request.contentToProcess.contentEntries[0]!;
@@ -298,24 +310,41 @@ describe('PayloadBuilder', () => {
 
     it('uses file content as data', () => {
       const file = createFile({ content: 'my content' });
-      const request = builder.buildPerUserProcessContentRequest(file, 'conv-1', 0);
-      const content = request.contentToProcess.contentEntries[0]!.content as any;
+      const requests = builder.buildPerUserProcessContentRequest(file, 'conv-1', 0);
+      const content = requests[0]!.contentToProcess.contentEntries[0]!.content as any;
       expect(content.data).toBe('my content');
       expect(content['@odata.type']).toBe('microsoft.graph.textContent');
     });
 
     it('uses placeholder when file has no content', () => {
       const file = createFile({ path: 'empty.txt', size: 500, content: undefined });
-      const request = builder.buildPerUserProcessContentRequest(file, 'conv-1', 0);
-      const content = request.contentToProcess.contentEntries[0]!.content as any;
+      const requests = builder.buildPerUserProcessContentRequest(file, 'conv-1', 0);
+      const content = requests[0]!.contentToProcess.contentEntries[0]!.content as any;
       expect(content.data).toContain('empty.txt');
       expect(content.data).toContain('500 bytes');
     });
 
     it('includes protectedAppMetadata with github domain', () => {
       const file = createFile();
-      const request = builder.buildPerUserProcessContentRequest(file, 'conv-1', 0);
-      expect(request.contentToProcess.protectedAppMetadata?.applicationLocation.value).toBe('https://github.com');
+      const requests = builder.buildPerUserProcessContentRequest(file, 'conv-1', 0);
+      expect(requests[0]!.contentToProcess.protectedAppMetadata?.applicationLocation.value).toBe('https://github.com');
+    });
+
+    it('splits large file into multiple requests', () => {
+      const largeContent = 'z'.repeat(4 * 1024 * 1024); // 4MB content
+      const file = createFile({ path: 'large.ts', content: largeContent, size: largeContent.length });
+      const requests = builder.buildPerUserProcessContentRequest(file, 'conv-1', 0);
+
+      expect(requests.length).toBeGreaterThan(1);
+      // All but last should be marked as truncated
+      for (let i = 0; i < requests.length - 1; i++) {
+        expect(requests[i]!.contentToProcess.contentEntries[0]!.isTruncated).toBe(true);
+      }
+      // Last should not be marked as truncated
+      expect(requests[requests.length - 1]!.contentToProcess.contentEntries[0]!.isTruncated).toBe(false);
+      // All content combined should equal original
+      const reconstructed = requests.map(r => (r.contentToProcess.contentEntries[0]!.content as any).data).join('');
+      expect(reconstructed).toBe(largeContent);
     });
   });
 
@@ -361,12 +390,26 @@ describe('PayloadBuilder', () => {
         createFile({ path: 'x.ts', authorId: 'user-x' }),
         createFile({ path: 'y.ts', authorId: 'user-y' }),
       ];
-      const batch = builder.buildProcessContentBatchRequest(files);
+      const batches = builder.buildProcessContentBatchRequest(files);
 
-      expect(batch.processContentRequests).toHaveLength(2);
-      expect(batch.processContentRequests[0]!.userId).toBe('user-x');
-      expect(batch.processContentRequests[1]!.userId).toBe('user-y');
-      expect(batch.processContentRequests[0]!.requestId).toBeTruthy();
+      expect(batches.length).toBeGreaterThanOrEqual(1);
+      const allItems = batches.flatMap(b => b.processContentRequests);
+      expect(allItems).toHaveLength(2);
+      expect(allItems[0]!.userId).toBe('user-x');
+      expect(allItems[1]!.userId).toBe('user-y');
+      expect(allItems[0]!.requestId).toBeTruthy();
+    });
+
+    it('splits into multiple batches when exceeding 3MB', () => {
+      const largeContent = 'a'.repeat(1024 * 1024); // 1MB each
+      const files = Array.from({ length: 5 }, (_, i) =>
+        createFile({ path: `file${i}.ts`, content: largeContent, authorId: `user-${i}` })
+      );
+      const batches = builder.buildProcessContentBatchRequest(files);
+
+      expect(batches.length).toBeGreaterThan(1);
+      const allItems = batches.flatMap(b => b.processContentRequests);
+      expect(allItems).toHaveLength(5);
     });
   });
 
@@ -397,7 +440,7 @@ describe('PayloadBuilder', () => {
       const prInfo = createPrInfo();
       const result = b.buildProcessAndUploadRequests(files, scopeResponse, prInfo);
 
-      expect(result.processContentRequest).toBeDefined();
+      expect(result.processContentRequests).toBeDefined();
       expect(result.uploadSignalRequests.length).toBeGreaterThanOrEqual(0);
     });
 
@@ -407,7 +450,7 @@ describe('PayloadBuilder', () => {
       const prInfo = createPrInfo();
 
       const result = builder.buildProcessAndUploadRequests(files, scopeResponse, prInfo);
-      expect(result.processContentRequest).toBeUndefined();
+      expect(result.processContentRequests).toHaveLength(0);
       expect(result.uploadSignalRequests).toHaveLength(2);
     });
   });

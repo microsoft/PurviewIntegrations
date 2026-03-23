@@ -356,7 +356,7 @@ export interface ScopeBase {
 }
 
 export interface SplitPCRequests {
-  processContentRequest?: ProcessContentBatchRequest;
+  processContentRequests: ProcessContentBatchRequest[];
   uploadSignalRequests: UploadSignalRequest[];
 }
 
