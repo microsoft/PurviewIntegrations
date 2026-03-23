@@ -26,6 +26,7 @@ export class PurviewClient {
     this.logger.info(`Queuing conversation message`);
 
     const endpoint = `${this.baseUrl}/conversations/${payload.conversationId}/messages`;
+    this.logger.debug(`[QueueConversationMessage] Request body:\n${this.summarisePayload(payload)}`);
     let payloadString: string = JSON.stringify(payload, this.jsonReplacer);
 
     try {
@@ -51,8 +52,8 @@ export class PurviewClient {
 
     this.logger.info(`Processing content asynchronously.`);
 
-    const endpoint = `${this.baseUrl}/security/dataSecurityAndGovernance/processContentAsync`
-
+    const endpoint = `${this.baseUrl}/security/dataSecurityAndGovernance/processContentAsync`;
+    this.logger.debug(`[ProcessContentAsync] Request body:\n${this.summarisePayload(payload)}`);
     let payloadString: string = JSON.stringify(payload, this.jsonReplacer);
 
     try {
@@ -80,6 +81,7 @@ export class PurviewClient {
     this.logger.info(`Processing content for user ${userId} (mode: ${inline ? 'inline' : 'offline'})`);
 
     const endpoint = `${this.baseUrl}/users/${userId}/dataSecurityAndGovernance/processContent`;
+    this.logger.debug(`[ProcessContent] Request body:\n${this.summarisePayload(request)}`);
     const payloadString: string = JSON.stringify(request, this.jsonReplacer);
 
     const additionalHeaders: Record<string, string> = {};
@@ -115,6 +117,7 @@ export class PurviewClient {
     this.logger.info(`Uploading signal for ${payload.contentMetadata.contentEntries[0]?.identifier}`);
 
     const endpoint = `${this.baseUrl}/users/${payload.userId}/dataSecurityAndGovernance/activities/contentActivities`;
+    this.logger.debug(`[UploadSignal] Request body:\n${this.summarisePayload(payload)}`);
     let payloadString: string = JSON.stringify(payload, this.jsonReplacer);
 
     try {
@@ -141,6 +144,7 @@ export class PurviewClient {
     this.logger.info(`Searching tenant protection scope`);
 
     const endpoint = `${this.baseUrl}/security/dataSecurityAndGovernance/protectionScopes/compute`;
+    this.logger.debug(`[SearchTenantProtectionScope] Request body:\n${this.summarisePayload(payload)}`);
     let payloadString: string = JSON.stringify(payload, this.jsonReplacer);
 
     try {
@@ -171,6 +175,7 @@ export class PurviewClient {
     this.logger.info(`Searching protection scope for user ${userId}`);
 
     const endpoint = `${this.baseUrl}/users/${userId}/dataSecurityAndGovernance/protectionScopes/compute`;
+    this.logger.debug(`[SearchUserProtectionScope] Request body:\n${this.summarisePayload(payload)}`);
     let payloadString: string = JSON.stringify(payload, this.jsonReplacer);
 
     try {
@@ -247,6 +252,7 @@ export class PurviewClient {
       const responseText = await response.text();
       const requestId: string | null = response.headers.get('client-request-id');
       this.logger.info(`[${operationName}] Received response with status: ${response.status}, correlation ID: ${requestId}`);
+      this.logger.debug(`[${operationName}] Response body:\n${this.sanitizeErrorResponse(responseText)}`);
       
       if (!response.ok) {
         this.logger.error('API request failed', {
@@ -317,5 +323,30 @@ export class PurviewClient {
       .replace(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/gi, '[GUID]');
     
     return sanitized.substring(0, 500); // Limit length
+  }
+
+  /**
+   * Produces a debug-safe JSON dump of a request payload.
+   * Truncates `data` fields (which carry file content) to avoid multi-MB log output.
+   */
+  private summarisePayload(payload: any): string {
+    const maxDataLen = 200;
+    try {
+      const clone = JSON.parse(JSON.stringify(payload));
+      const truncate = (obj: any): void => {
+        if (typeof obj !== 'object' || obj === null) return;
+        for (const key of Object.keys(obj)) {
+          if (key === 'data' && typeof obj[key] === 'string' && obj[key].length > maxDataLen) {
+            obj[key] = obj[key].substring(0, maxDataLen) + `... [truncated, ${obj[key].length} chars total]`;
+          } else {
+            truncate(obj[key]);
+          }
+        }
+      };
+      truncate(clone);
+      return JSON.stringify(clone, null, 2);
+    } catch {
+      return '[unable to summarise payload]';
+    }
   }
 }

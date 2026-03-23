@@ -1,4 +1,4 @@
-import { ActionConfig, FileMetadata, PrInfo, CommitInfo } from '../config/types';
+import { ActionConfig, FileMetadata, PrInfo, CommitInfo, CommitFiles } from '../config/types';
 export declare class FileProcessor {
     private readonly config;
     private readonly logger;
@@ -32,7 +32,9 @@ export declare class FileProcessor {
     private getFilesForCommit;
     private isCommitEmpty;
     getCommits(): Promise<CommitInfo[]>;
-    getLatestPushFiles(): Promise<FileMetadata[]>;
+    getAllPRCommits(): Promise<CommitInfo[]>;
+    getFilesGroupedByCommit(lastProcessedHeadSha?: string | null): Promise<CommitFiles[]>;
+    getLatestPushFiles(lastProcessedHeadSha?: string | null): Promise<FileMetadata[]>;
     private getPullRequestFiles;
     private getFilesFromPatterns;
 }

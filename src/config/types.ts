@@ -406,6 +406,11 @@ export interface CommitInfo {
     email: string | undefined;
 }
 
+export interface CommitFiles {
+  sha: string;
+  files: FileMetadata[];
+}
+
 // --- User mapping from users.json ---
 
 export interface UsersConfig {

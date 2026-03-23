@@ -1,5 +1,5 @@
 import * as github from '@actions/github';
-import { ActionConfig, FileMetadata, StateTrackingInfo } from '../config/types';
+import { ActionConfig, FileMetadata, StateTrackingInfo, ApiResponse, ProtectionScopesResponse } from '../config/types';
 import { FileProcessor } from '../file/fileProcessor';
 import { PurviewClient } from '../api/purviewClient';
 import { PayloadBuilder } from '../payload/payloadBuilder';
@@ -102,7 +102,8 @@ export class FullScanService {
     stateInfo: StateTrackingInfo | undefined,
     failedPayloads: string[],
     prInfo: any,
-    userPsDeniedCache: Set<string>
+    userPsDeniedCache: Set<string>,
+    userPsCache: Map<string, ApiResponse<ProtectionScopesResponse>>
   ): Promise<number> {
     this.logger.info(
       stateInfo
@@ -135,7 +136,7 @@ export class FullScanService {
     } else {
       // Tenant PS has scopes → group files by user and call per-user PS + PCA
       this.logger.info(`Tenant PS returned ${tenantPsResponse.data.value.length} scope(s). Grouping files by user for per-user PS + PCA.`);
-      await this.processFilesByUser(allFiles, prInfo, failedPayloads, psRequest, userPsDeniedCache);
+      await this.processFilesByUser(allFiles, prInfo, failedPayloads, psRequest, userPsDeniedCache, userPsCache);
     }
 
     // Write state marker
@@ -232,10 +233,11 @@ export class FullScanService {
       
       if (workflowRef) {
         // GITHUB_WORKFLOW_REF format: "octo-org/hello-world/.github/workflows/my-workflow.yml@refs/heads/main"
-        const refMatch = workflowRef.match(/\.github\/workflows\/[^@]+/);
-        if (refMatch) {
-          workflowId = refMatch[0];
-          this.logger.info(`Extracted workflow file path from GITHUB_WORKFLOW_REF: ${workflowId}`);
+        // Extract just the filename — octokit URL-encodes slashes in the full path, causing 404
+        const refMatch = workflowRef.match(/\.github\/workflows\/([^@]+)/);
+        if (refMatch && refMatch[1]) {
+          workflowId = refMatch[1];
+          this.logger.info(`Extracted workflow filename from GITHUB_WORKFLOW_REF: ${workflowId}`);
         }
       }
       
@@ -250,10 +252,18 @@ export class FullScanService {
         return false;
       }
 
+      // Resolve the numeric workflow ID to avoid 404 when the filename
+      // isn't recognised (e.g. workflow has never completed a run yet).
+      const numericWorkflowId = await this.resolveWorkflowId(octokit, workflowId, targetOwner, targetRepo);
+      if (numericWorkflowId === null) {
+        this.logger.info(`Workflow '${workflowId}' not found in repo — defaulting to first run`);
+        return true;
+      }
+
       const { data: workflowRuns } = await octokit.rest.actions.listWorkflowRuns({
         owner: targetOwner,
         repo: targetRepo,
-        workflow_id: workflowId,
+        workflow_id: numericWorkflowId,
         status: 'completed',
         conclusion: 'success',
         per_page: 1,
@@ -268,8 +278,15 @@ export class FullScanService {
       );
       
       return firstRun;
-    } catch (error) {
-      this.logger.warn('Failed to check workflow history, defaulting to non-first run', { error });
+    } catch (error: any) {
+      if (error?.status === 404) {
+        this.logger.warn(
+          'Workflow history returned 404. Ensure the workflow has "actions: read" permission ' +
+          '(add `permissions: { actions: read }` to your workflow YAML). Defaulting to non-first run.'
+        );
+      } else {
+        this.logger.warn('Failed to check workflow history, defaulting to non-first run', { error });
+      }
       return false;
     }
   }
@@ -279,7 +296,8 @@ export class FullScanService {
     prInfo: any,
     failedPayloads: string[],
     psRequest: any,
-    userPsDeniedCache: Set<string>
+    userPsDeniedCache: Set<string>,
+    userPsCache: Map<string, ApiResponse<ProtectionScopesResponse>>
   ): Promise<void> {
     const filesByUser = new Map<string, FileMetadata[]>();
     for (const file of allFiles) {
@@ -292,8 +310,16 @@ export class FullScanService {
     for (const [userId, userFiles] of filesByUser) {
       this.logger.info(`Full scan: processing ${userFiles.length} file(s) for user ${userId}`);
 
-      // Call per-user protection scopes
-      const userPsResponse = await this.purviewClient.searchUserProtectionScope(userId, psRequest);
+      // Call per-user protection scopes (check cache first)
+      let userPsResponse = userPsCache.get(userId);
+      if (userPsResponse) {
+        this.logger.info(`Full scan: using cached PS response for user ${userId}`);
+      } else {
+        userPsResponse = await this.purviewClient.searchUserProtectionScope(userId, psRequest);
+        if (userPsResponse.success) {
+          userPsCache.set(userId, userPsResponse);
+        }
+      }
 
       if (!userPsResponse.success) {
         this.logger.error(`User PS failed for ${userId}: ${userPsResponse.error}. Falling back to contentActivities.`);
@@ -362,6 +388,37 @@ export class FullScanService {
         this.logger.error(`ContentActivities upload failed for ${req.contentMetadata.contentEntries[0]?.identifier}: ${result.error}`);
         failedPayloads.push(req.id);
       }
+    }
+  }
+
+  /**
+   * Resolves a workflow filename to its numeric ID by listing the repo's workflows.
+   * Returns null if no matching workflow is found.
+   */
+  private async resolveWorkflowId(
+    octokit: ReturnType<typeof github.getOctokit>,
+    workflowFilename: string,
+    owner: string,
+    repo: string
+  ): Promise<number | null> {
+    try {
+      const { data } = await octokit.rest.actions.listRepoWorkflows({
+        owner,
+        repo,
+        per_page: 100,
+      });
+      const match = data.workflows.find(
+        (w: { path: string }) => w.path.endsWith(`/${workflowFilename}`) || w.path === workflowFilename
+      );
+      if (match) {
+        this.logger.info(`Resolved workflow '${workflowFilename}' to numeric ID ${match.id}`);
+        return match.id;
+      }
+      this.logger.warn(`No workflow matching '${workflowFilename}' found among ${data.total_count} repo workflows`);
+      return null;
+    } catch (error) {
+      this.logger.warn(`Failed to list repo workflows for ID resolution`, { error });
+      return null;
     }
   }
 }

@@ -6,7 +6,7 @@ import * as crypto from 'crypto';
 import { execSync } from 'child_process';
 import isBinaryPath from 'is-binary-path';
 import { minimatch } from 'minimatch';
-import { ActionConfig, FileMetadata, PrInfo, CommitInfo } from '../config/types';
+import { ActionConfig, FileMetadata, PrInfo, CommitInfo, CommitFiles } from '../config/types';
 
 // Type aliases for cleaner code
 type CommitFile = NonNullable<Endpoints['GET /repos/{owner}/{repo}/commits/{ref}']['response']['data']['files']>[number];
@@ -399,6 +399,11 @@ export class FileProcessor {
       return commitInfos;
     }
 
+    // For pull_request events, always list all PR commits
+    if (github.context.payload.pull_request) {
+      return this.getAllPRCommits();
+    }
+
     let before = github.context.payload["before"];
     let after = github.context.payload["after"];
 
@@ -419,63 +424,79 @@ export class FileProcessor {
       return commitInfos;
     }
 
-    if (github.context.payload.pull_request){
-      this.logger.info(`Could not do synchronize comparison. Falling back to all commits in PR. action type: ${github.context.payload.action}, before commit: ${before}, after commit: ${after}`);
-      const { data: commits } = await this.octokit.rest.pulls.listCommits({
-        owner: this.config.repository.owner,
-        repo: this.config.repository.repo,
-        pull_number: github.context.payload.pull_request.number
-      });
-
-      const commitInfos: CommitInfo[] = commits.map((commit: PullRequestCommit) => ({
-        sha: commit.sha,
-        email: commit.commit.author?.email || commit.commit.committer?.email || undefined
-      }));
-
-      return commitInfos;
-    }
-
     this.logger.warn('No valid comparison found, returning empty commit list');
     return [];
   }
 
-  async getLatestPushFiles(): Promise<FileMetadata[]> {
-    const commits = await this.getCommits();
-
-    const commitAuthorEmails: Set<string> = new Set();
-    const commitShas: string[] = [];
-
-    for (const commit of commits) {
-      const authorEmail = commit.email;
-
-      if (authorEmail) {
-        commitAuthorEmails.add(authorEmail.toLowerCase());
-      }
-
-      commitShas.push(commit.sha);
+  async getAllPRCommits(): Promise<CommitInfo[]> {
+    const pr = github.context.payload.pull_request;
+    if (!pr) {
+      this.logger.warn('No pull request context available for getAllPRCommits');
+      return [];
     }
 
-    this.logger.info(`Processing the following commits: ${JSON.stringify(commitShas)}`);
-    const allCommitFiles = [];
+    this.logger.info(`Listing all commits in PR #${pr.number}`);
+    const { data: commits } = await this.octokit.rest.pulls.listCommits({
+      owner: this.config.repository.owner,
+      repo: this.config.repository.repo,
+      pull_number: pr.number
+    });
 
-    // Resolve all author emails to user IDs (uses cache + users.json + Graph API)
+    const commitInfos: CommitInfo[] = commits.map((commit: PullRequestCommit) => ({
+      sha: commit.sha,
+      email: commit.commit.author?.email || commit.commit.committer?.email || undefined
+    }));
+
+    this.logger.info(`Found ${commitInfos.length} total commit(s) in PR #${pr.number}`);
+    return commitInfos;
+  }
+
+  async getFilesGroupedByCommit(lastProcessedHeadSha?: string | null): Promise<CommitFiles[]> {
+    const allCommits = await this.getCommits();
+
+    // Find commits to process by skipping everything up to and including lastProcessedHeadSha
+    let commitsToProcess = allCommits;
+    if (lastProcessedHeadSha) {
+      const idx = allCommits.findIndex(c => c.sha === lastProcessedHeadSha);
+      if (idx >= 0) {
+        commitsToProcess = allCommits.slice(idx + 1);
+        this.logger.info(`Found last processed head SHA ${lastProcessedHeadSha} at position ${idx}; skipping ${idx + 1} commit(s), ${commitsToProcess.length} remaining`);
+      } else {
+        this.logger.info(`Last processed head SHA ${lastProcessedHeadSha} not found in commit list; processing all ${allCommits.length} commit(s)`);
+      }
+    }
+
+    if (commitsToProcess.length === 0) {
+      this.logger.info('No new commits to process');
+      return [];
+    }
+
+    // Resolve all author emails to user IDs up front
+    const commitAuthorEmails: Set<string> = new Set();
+    for (const commit of commitsToProcess) {
+      if (commit.email) {
+        commitAuthorEmails.add(commit.email.toLowerCase());
+      }
+    }
     const userIdMap = await this.resolveUserIds(commitAuthorEmails);
 
-    for (const commit of commits) {
+    const result: CommitFiles[] = [];
+    for (const commit of commitsToProcess) {
       this.logger.info(`Processing commit: ${commit.sha}`);
-      const authorUpn = commit.email;
-      let userId = undefined;
-
-      if (authorUpn) {
-        userId = userIdMap[authorUpn.toLowerCase()] || this.config.userId;
-        this.logger.info(`Resolved '${authorUpn}' → ${userId}`);
+      let userId: string | undefined;
+      if (commit.email) {
+        userId = userIdMap[commit.email.toLowerCase()] || this.config.userId;
       }
-
-      const commitFiles = await this.getFilesForCommit(commit.sha, userId);
-      allCommitFiles.push(...commitFiles);
+      const files = await this.getFilesForCommit(commit.sha, userId);
+      result.push({ sha: commit.sha, files });
     }
 
-    return allCommitFiles;
+    return result;
+  }
+
+  async getLatestPushFiles(lastProcessedHeadSha?: string | null): Promise<FileMetadata[]> {
+    const commitGroups = await this.getFilesGroupedByCommit(lastProcessedHeadSha);
+    return commitGroups.flatMap(cg => cg.files);
   }
 
   private async getPullRequestFiles(): Promise<string[]> {

@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { ActionConfig, FileMetadata, BlockedFileResult, ExecutionMode, Activity, ProcessContentResponse } from '../config/types';
+import { ActionConfig, FileMetadata, BlockedFileResult, ExecutionMode, Activity, ProcessContentResponse, ApiResponse, ProtectionScopesResponse } from '../config/types';
 import { AuthenticationService } from '../auth/authenticationService';
 import { FileProcessor } from '../file/fileProcessor';
 import { PurviewClient } from '../api/purviewClient';
@@ -54,6 +54,9 @@ export class GitHubActionsRunner {
       // Cache of userIds that returned 401 on User PS — skip them on subsequent calls
       const userPsDeniedCache = new Set<string>();
 
+      // Cache of successful User PS responses — avoids redundant API calls for the same user across commits
+      const userPsCache = new Map<string, ApiResponse<ProtectionScopesResponse>>();
+
       // ─── Full Scan Path (first run or manual workflow dispatch) ───
       let fullScanFileCount = 0;
       const isManualDispatch = github.context.eventName === 'workflow_dispatch';
@@ -63,150 +66,180 @@ export class GitHubActionsRunner {
         if (isManualDispatch && !firstRun) {
           this.logger.info('Performing full scan (manually triggered via workflow_dispatch)');
         }
-        fullScanFileCount = await this.fullScanService.performFullScan(stateInfo, failedPayloads, prInfo, userPsDeniedCache);
+        fullScanFileCount = await this.fullScanService.performFullScan(stateInfo, failedPayloads, prInfo, userPsDeniedCache, userPsCache);
       }
 
       // ─── PR Diff Path (skip if manually triggered) ───
-      let diffFiles: FileMetadata[] = [];
+      let diffFileCount = 0;
       if (!isManualDispatch) {
-        // Step 4: Process PR diff files
+        // Step 4: Process commits
         this.logger.info('Running PR diff flow');
-        diffFiles = await this.fileProcessor.getLatestPushFiles();
 
-        if (diffFiles.length === 0) {
-          this.logger.warn('No changed files found for PR diff');
+        // Get the commit list, then find the last processed position via workflow run history
+        const allCommits = await this.fileProcessor.getCommits();
+        const commitShaSet = new Set(allCommits.map(c => c.sha));
+        const lastProcessedSha = await this.findLastProcessedCommitSha(commitShaSet);
+
+        // Get files grouped by commit, skipping already-processed commits
+        const commitGroups = await this.fileProcessor.getFilesGroupedByCommit(lastProcessedSha);
+
+        if (commitGroups.length === 0) {
+          this.logger.warn('No new commits to process for PR diff');
         } else {
-          // Group files by userId
-          const filesByUser = new Map<string, FileMetadata[]>();
-          for (const file of diffFiles) {
-            const userId = file.authorId || this.config.userId;
-            const existing = filesByUser.get(userId) || [];
-            existing.push(file);
-            filesByUser.set(userId, existing);
-          }
+          for (const commitGroup of commitGroups) {
+            const { sha, files } = commitGroup;
+            this.logger.info(`── Processing commit ${sha} with ${files.length} file(s) ──`);
 
-          this.logger.info(`PR diff: ${diffFiles.length} file(s) across ${filesByUser.size} user(s)`);
-
-          const psRequest = this.payloadBuilder.buildProtectionScopesRequest();
-          const requestLocation = psRequest.locations?.[0];
-
-          // Process each user's files
-          for (const [userId, userFiles] of filesByUser) {
-            this.logger.info(`Processing ${userFiles.length} file(s) for user ${userId}`);
-
-            // Check User PS denial cache (401 from earlier call)
-            if (userPsDeniedCache.has(userId)) {
-              this.logger.warn(`Skipping user ${userId} — cached 401 from earlier PS call. Routing to contentActivities.`);
-              await this.sendContentActivities(userFiles, prInfo, failedPayloads);
+            if (files.length === 0) {
+              this.logger.info(`Commit ${sha} has no matching files, skipping`);
               continue;
             }
 
-            // Call per-user protection scopes
-            const psApiResponse = await this.purviewClient.searchUserProtectionScope(userId, psRequest);
+            diffFileCount += files.length;
 
-            if (!psApiResponse.success) {
-              this.logger.error(`Failed to get protection scopes for user ${userId}: ${psApiResponse.error}`);
-              failedPayloads.push(`ps-${userId}`);
-              // Cache 401s so we don't retry this user
-              if (psApiResponse.statusCode === 401) {
-                userPsDeniedCache.add(userId);
-                this.logger.warn(`User ${userId} returned 401 on PS — cached, will skip in future calls.`);
+            // Group files by userId
+            const filesByUser = new Map<string, FileMetadata[]>();
+            for (const file of files) {
+              const userId = file.authorId || this.config.userId;
+              const existing = filesByUser.get(userId) || [];
+              existing.push(file);
+              filesByUser.set(userId, existing);
+            }
+
+            this.logger.info(`Commit ${sha}: ${files.length} file(s) across ${filesByUser.size} user(s)`);
+
+            const psRequest = this.payloadBuilder.buildProtectionScopesRequest();
+            const requestLocation = psRequest.locations?.[0];
+
+            // Process each user's files
+            for (const [userId, userFiles] of filesByUser) {
+              this.logger.info(`Processing ${userFiles.length} file(s) for user ${userId}`);
+
+              // Check User PS denial cache (401 from earlier call)
+              if (userPsDeniedCache.has(userId)) {
+                this.logger.warn(`Skipping user ${userId} — cached 401 from earlier PS call. Routing to contentActivities.`);
+                await this.sendContentActivities(userFiles, prInfo, failedPayloads);
+                continue;
               }
-              await this.sendContentActivities(userFiles, prInfo, failedPayloads);
-              continue;
-            }
 
-            const psResponse = psApiResponse.data;
-            const scopeIdentifier = psApiResponse.etag || '';
+              // Call per-user protection scopes (check cache first)
+              let psApiResponse = userPsCache.get(userId);
+              if (psApiResponse) {
+                this.logger.info(`Using cached PS response for user ${userId}`);
+              } else {
+                psApiResponse = await this.purviewClient.searchUserProtectionScope(userId, psRequest);
+                if (psApiResponse.success) {
+                  userPsCache.set(userId, psApiResponse);
+                }
+              }
 
-            if (!psResponse || !psResponse.value) {
-              this.logger.warn(`Empty protection scopes response for user ${userId}, routing all files to contentActivities`);
-              await this.sendContentActivities(userFiles, prInfo, failedPayloads);
-              continue;
-            }
+              if (!psApiResponse.success) {
+                this.logger.error(`Failed to get protection scopes for user ${userId}: ${psApiResponse.error}`);
+                failedPayloads.push(`ps-${userId}`);
+                // Cache 401s so we don't retry this user
+                if (psApiResponse.statusCode === 401) {
+                  userPsDeniedCache.add(userId);
+                  this.logger.warn(`User ${userId} returned 401 on PS — cached, will skip in future calls.`);
+                }
+                await this.sendContentActivities(userFiles, prInfo, failedPayloads);
+                continue;
+              }
 
-            // Check applicable scopes
-            const scopeCheck = this.payloadBuilder.checkApplicableScopes(
-              psResponse.value,
-              Activity.uploadText,
-              requestLocation!
-            );
+              const psResponse = psApiResponse.data;
+              const scopeIdentifier = psApiResponse.etag || '';
 
-            if (!scopeCheck.shouldProcess) {
-              // No matching scopes → contentActivities (fire-and-forget)
-              this.logger.info(`No matching scopes for user ${userId}, routing ${userFiles.length} file(s) to contentActivities`);
-              await this.sendContentActivities(userFiles, prInfo, failedPayloads);
-              continue;
-            }
+              if (!psResponse || !psResponse.value) {
+                this.logger.warn(`Empty protection scopes response for user ${userId}, routing all files to contentActivities`);
+                await this.sendContentActivities(userFiles, prInfo, failedPayloads);
+                continue;
+              }
 
-            // Matching scopes found — route based on execution mode
-            if (scopeCheck.executionMode === ExecutionMode.evaluateInline) {
-              // evaluateInline → per-user PC, synchronous, parse for blocks
-              this.logger.info(`evaluateInline: calling processContent for ${userFiles.length} file(s), user ${userId}`);
+              // Check applicable scopes
+              const scopeCheck = this.payloadBuilder.checkApplicableScopes(
+                psResponse.value,
+                Activity.uploadText,
+                requestLocation!
+              );
 
-              const conversationId = crypto.randomUUID();
-              let seqNum = 0;
+              if (!scopeCheck.shouldProcess) {
+                // No matching scopes → contentActivities (fire-and-forget)
+                this.logger.info(`No matching scopes for user ${userId}, routing ${userFiles.length} file(s) to contentActivities`);
+                await this.sendContentActivities(userFiles, prInfo, failedPayloads);
+                continue;
+              }
 
-              for (const file of userFiles) {
-                const pcRequests = this.payloadBuilder.buildPerUserProcessContentRequest(file, conversationId, seqNum);
-                seqNum += pcRequests.length;
+              // Matching scopes found — route based on execution mode
+              if (scopeCheck.executionMode === ExecutionMode.evaluateInline) {
+                // evaluateInline → per-user PC, synchronous, parse for blocks
+                this.logger.info(`evaluateInline: calling processContent for ${userFiles.length} file(s), user ${userId}`);
 
-                for (const pcRequest of pcRequests) {
-                  let pcResponse = await this.purviewClient.processContent(userId, pcRequest, scopeIdentifier, true);
+                const conversationId = crypto.randomUUID();
+                let seqNum = 0;
 
-                  if (!pcResponse.success) {
-                    this.logger.error(`PC failed for file ${file.path}: ${pcResponse.error}. Falling back to contentActivities.`);
-                    failedPayloads.push(`pc-${file.path}`);
-                    await this.sendContentActivities([file], prInfo, failedPayloads);
-                    continue;
-                  }
+                for (const file of userFiles) {
+                  const pcRequests = this.payloadBuilder.buildPerUserProcessContentRequest(file, conversationId, seqNum);
+                  seqNum += pcRequests.length;
 
-                  const pcData = pcResponse.data as ProcessContentResponse;
+                  for (const pcRequest of pcRequests) {
+                    let pcResponse = await this.purviewClient.processContent(userId, pcRequest, scopeIdentifier, true);
 
-                  // Handle protectionScopeState: "modified" → re-fetch scopes and retry
-                  if (pcData?.protectionScopeState === 'modified') {
-                    this.logger.info(`Protection scope state modified for user ${userId}, re-fetching scopes and retrying PC for ${file.path}`);
+                    if (!pcResponse.success) {
+                      this.logger.error(`PC failed for file ${file.path}: ${pcResponse.error}. Falling back to contentActivities.`);
+                      failedPayloads.push(`pc-${file.path}`);
+                      await this.sendContentActivities([file], prInfo, failedPayloads);
+                      continue;
+                    }
 
-                    const freshPsResponse = await this.purviewClient.searchUserProtectionScope(userId, psRequest);
-                    if (freshPsResponse.success && freshPsResponse.data) {
-                      const freshScopeId = freshPsResponse.etag || '';
-                      pcResponse = await this.purviewClient.processContent(userId, pcRequest, freshScopeId, true);
+                    const pcData = pcResponse.data as ProcessContentResponse;
 
-                      if (!pcResponse.success) {
-                        this.logger.error(`PC retry failed for file ${file.path}: ${pcResponse.error}`);
-                        failedPayloads.push(`pc-retry-${file.path}`);
-                        continue;
+                    // Handle protectionScopeState: "modified" → re-fetch scopes and retry
+                    if (pcData?.protectionScopeState === 'modified') {
+                      this.logger.info(`Protection scope state modified for user ${userId}, re-fetching scopes and retrying PC for ${file.path}`);
+
+                      const freshPsResponse = await this.purviewClient.searchUserProtectionScope(userId, psRequest);
+                      if (freshPsResponse.success && freshPsResponse.data) {
+                        userPsCache.set(userId, freshPsResponse);
+                        const freshScopeId = freshPsResponse.etag || '';
+                        pcResponse = await this.purviewClient.processContent(userId, pcRequest, freshScopeId, true);
+
+                        if (!pcResponse.success) {
+                          this.logger.error(`PC retry failed for file ${file.path}: ${pcResponse.error}`);
+                          failedPayloads.push(`pc-retry-${file.path}`);
+                          continue;
+                        }
                       }
                     }
-                  }
 
-                  // Check for block actions
-                  const responseData = pcResponse.data as ProcessContentResponse;
-                  if (responseData && isBlocked(responseData)) {
-                    const blockingActions = getBlockingActions(responseData);
-                    this.logger.warn(`BLOCKED: File ${file.path} blocked by ${blockingActions.length} policy action(s)`);
-                    blockedFiles.push({
-                      filePath: file.path,
-                      userId,
-                      policyActions: blockingActions,
-                    });
+                    // Check for block actions
+                    const responseData = pcResponse.data as ProcessContentResponse;
+                    if (responseData && isBlocked(responseData)) {
+                      const blockingActions = getBlockingActions(responseData);
+                      this.logger.warn(`BLOCKED: File ${file.path} blocked by ${blockingActions.length} policy action(s)`);
+                      blockedFiles.push({
+                        filePath: file.path,
+                        userId,
+                        policyActions: blockingActions,
+                      });
+                    }
                   }
                 }
-              }
-            } else {
-              // evaluateOffline → PCA batch (fire-and-forget)
-              this.logger.info(`evaluateOffline: sending ${userFiles.length} file(s) to PCA batch for user ${userId}`);
-              const pcaBatchRequests = this.payloadBuilder.buildProcessContentBatchRequest(userFiles);
-              for (const pcaBatchRequest of pcaBatchRequests) {
-                const pcaResult = await this.purviewClient.processContentAsync(pcaBatchRequest);
+              } else {
+                // evaluateOffline → PCA batch (fire-and-forget)
+                this.logger.info(`evaluateOffline: sending ${userFiles.length} file(s) to PCA batch for user ${userId}`);
+                const pcaBatchRequests = this.payloadBuilder.buildProcessContentBatchRequest(userFiles);
+                for (const pcaBatchRequest of pcaBatchRequests) {
+                  const pcaResult = await this.purviewClient.processContentAsync(pcaBatchRequest);
 
-                if (!pcaResult.success) {
-                  this.logger.error(`PCA batch failed for user ${userId}: ${pcaResult.error}. Falling back to contentActivities.`);
-                  failedPayloads.push(`pca-${userId}`);
-                  await this.sendContentActivities(userFiles, prInfo, failedPayloads);
+                  if (!pcaResult.success) {
+                    this.logger.error(`PCA batch failed for user ${userId}: ${pcaResult.error}. Falling back to contentActivities.`);
+                    failedPayloads.push(`pca-${userId}`);
+                    await this.sendContentActivities(userFiles, prInfo, failedPayloads);
+                  }
                 }
               }
             }
+
+            this.logger.info(`Commit ${sha} processed successfully`);
           }
 
           // Post PR review comment if any files were blocked
@@ -239,7 +272,7 @@ export class GitHubActionsRunner {
       }
 
       // Step 5: Set outputs
-      const totalProcessed = fullScanFileCount + diffFiles.length;
+      const totalProcessed = fullScanFileCount + diffFileCount;
       core.setOutput('processed-files', totalProcessed);
       core.setOutput('failed-requests', failedPayloads.length);
       core.setOutput('blocked-files', JSON.stringify(blockedFiles.map(bf => bf.filePath)));
@@ -298,5 +331,130 @@ export class GitHubActionsRunner {
     }
     
     await summary.write();
+  }
+
+  /**
+   * Paginates through successful workflow runs in batches of 3, checking each
+   * run's head_sha against the known PR commit SHAs. Returns the first match
+   * (i.e. the most recent successfully processed commit), or null if none found.
+   */
+  private async findLastProcessedCommitSha(commitShas: Set<string>): Promise<string | null> {
+    try {
+      const githubToken = process.env['GITHUB_TOKEN'] || '';
+      if (!githubToken) {
+        this.logger.warn('GITHUB_TOKEN not available for workflow run history check');
+        return null;
+      }
+
+      const octokit = github.getOctokit(githubToken);
+
+      // Determine the workflow ID (just the filename, not the full path —
+      // octokit URL-encodes slashes which causes 404 on the API)
+      let workflowId = '';
+      const workflowRef = process.env['GITHUB_WORKFLOW_REF'] || '';
+      if (workflowRef) {
+        const refMatch = workflowRef.match(/\.github\/workflows\/([^@]+)/);
+        if (refMatch && refMatch[1]) {
+          workflowId = refMatch[1];
+        }
+      }
+      if (!workflowId && github.context.workflow) {
+        workflowId = github.context.workflow;
+      }
+      if (!workflowId) {
+        this.logger.warn('Could not determine workflow ID for commit dedup');
+        return null;
+      }
+
+      // Resolve the numeric workflow ID to avoid 404 when the filename
+      // isn't recognised (e.g. workflow has never completed a run yet).
+      const numericWorkflowId = await this.resolveWorkflowId(octokit, workflowId);
+      if (numericWorkflowId === null) {
+        this.logger.info(`Workflow '${workflowId}' not found in repo — skipping commit dedup`);
+        return null;
+      }
+
+      // Scope to the PR head branch if available
+      const branch = github.context.payload.pull_request?.['head']?.ref as string | undefined;
+
+      const perPage = 3;
+      let page = 1;
+      let totalFetched = 0;
+
+      while (true) {
+        const { data: runs } = await octokit.rest.actions.listWorkflowRuns({
+          owner: this.config.repository.owner,
+          repo: this.config.repository.repo,
+          workflow_id: numericWorkflowId,
+          status: 'completed',
+          conclusion: 'success',
+          ...(branch ? { branch } : {}),
+          per_page: perPage,
+          page,
+        });
+
+        if (runs.workflow_runs.length === 0) {
+          break;
+        }
+
+        for (const run of runs.workflow_runs) {
+          if (commitShas.has(run.head_sha)) {
+            this.logger.info(`Found matching head SHA ${run.head_sha} from workflow run ${run.id} (page ${page})`);
+            return run.head_sha;
+          }
+        }
+
+        totalFetched += runs.workflow_runs.length;
+        this.logger.info(`Checked ${totalFetched} successful run(s) so far, no match in commit list yet`);
+
+        if (totalFetched >= runs.total_count) {
+          break;
+        }
+
+        page++;
+      }
+
+      this.logger.info('No previous successful run head SHA matches current commit list — will process all commits');
+      return null;
+    } catch (error: any) {
+      if (error?.status === 404) {
+        this.logger.warn(
+          'Workflow run history returned 404. Ensure the workflow has "actions: read" permission ' +
+          '(add `permissions: { actions: read }` to your workflow YAML). Proceeding without commit dedup.'
+        );
+      } else {
+        this.logger.warn('Failed to query workflow run history for commit dedup', { error });
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Resolves a workflow filename to its numeric ID by listing the repo's workflows.
+   * Returns null if no matching workflow is found.
+   */
+  private async resolveWorkflowId(
+    octokit: ReturnType<typeof github.getOctokit>,
+    workflowFilename: string
+  ): Promise<number | null> {
+    try {
+      const { data } = await octokit.rest.actions.listRepoWorkflows({
+        owner: this.config.repository.owner,
+        repo: this.config.repository.repo,
+        per_page: 100,
+      });
+      const match = data.workflows.find(
+        (w: { path: string }) => w.path.endsWith(`/${workflowFilename}`) || w.path === workflowFilename
+      );
+      if (match) {
+        this.logger.info(`Resolved workflow '${workflowFilename}' to numeric ID ${match.id}`);
+        return match.id;
+      }
+      this.logger.warn(`No workflow matching '${workflowFilename}' found among ${data.total_count} repo workflows`);
+      return null;
+    } catch (error) {
+      this.logger.warn(`Failed to list repo workflows for ID resolution`, { error });
+      return null;
+    }
   }
 }

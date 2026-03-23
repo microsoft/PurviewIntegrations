@@ -322,6 +322,10 @@ export interface CommitInfo {
     sha: string;
     email: string | undefined;
 }
+export interface CommitFiles {
+    sha: string;
+    files: FileMetadata[];
+}
 export interface UsersConfig {
     users: UserMapping[];
     defaultUserId: string;

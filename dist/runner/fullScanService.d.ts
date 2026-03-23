@@ -1,4 +1,4 @@
-import { ActionConfig, StateTrackingInfo } from '../config/types';
+import { ActionConfig, StateTrackingInfo, ApiResponse, ProtectionScopesResponse } from '../config/types';
 import { FileProcessor } from '../file/fileProcessor';
 import { PurviewClient } from '../api/purviewClient';
 import { PayloadBuilder } from '../payload/payloadBuilder';
@@ -21,7 +21,7 @@ export declare class FullScanService {
     /**
      * Performs a full repository scan when it's the first run
      */
-    performFullScan(stateInfo: StateTrackingInfo | undefined, failedPayloads: string[], prInfo: any, userPsDeniedCache: Set<string>): Promise<number>;
+    performFullScan(stateInfo: StateTrackingInfo | undefined, failedPayloads: string[], prInfo: any, userPsDeniedCache: Set<string>, userPsCache: Map<string, ApiResponse<ProtectionScopesResponse>>): Promise<number>;
     private resolveDefaultBranch;
     private ensureBranchExists;
     private detectFirstRun;
@@ -29,5 +29,10 @@ export declare class FullScanService {
     private processFilesByUser;
     private writeStateMarker;
     private sendContentActivities;
+    /**
+     * Resolves a workflow filename to its numeric ID by listing the repo's workflows.
+     * Returns null if no matching workflow is found.
+     */
+    private resolveWorkflowId;
 }
 //# sourceMappingURL=fullScanService.d.ts.map

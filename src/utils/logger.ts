@@ -19,7 +19,10 @@ export class Logger {
   debug(message: string, data?: any): void {
     if (this.isDebug) {
       const logMessage = this.formatMessage(LogLevel.DEBUG, message, data);
-      core.debug(logMessage);
+      // Use core.info so debug output is always visible in the Actions log
+      // when the user has enabled the debug input. core.debug only shows
+      // when the ACTIONS_STEP_DEBUG repo secret is set.
+      core.info(logMessage);
     }
   }
   

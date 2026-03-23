@@ -18,5 +18,10 @@ export declare class PurviewClient {
     private jsonReplacer;
     private generateRequestId;
     private sanitizeErrorResponse;
+    /**
+     * Produces a debug-safe JSON dump of a request payload.
+     * Truncates `data` fields (which carry file content) to avoid multi-MB log output.
+     */
+    private summarisePayload;
 }
 //# sourceMappingURL=purviewClient.d.ts.map
