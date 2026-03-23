@@ -17,15 +17,15 @@ jest.mock('@actions/core', () => ({
   },
 }));
 
-const mockListWorkflowRuns = jest.fn();
-const mockListRepoWorkflows = jest.fn();
+const mockListWorkflowRunsForRepo = jest.fn();
+const mockGetWorkflowRun = jest.fn();
 
 jest.mock('@actions/github', () => ({
   getOctokit: jest.fn(() => ({
     rest: {
       actions: {
-        listWorkflowRuns: mockListWorkflowRuns,
-        listRepoWorkflows: mockListRepoWorkflows,
+        listWorkflowRunsForRepo: mockListWorkflowRunsForRepo,
+        getWorkflowRun: mockGetWorkflowRun,
       },
     },
   })),
@@ -87,14 +87,11 @@ describe('GitHubActionsRunner', () => {
     process.env['GITHUB_TOKEN'] = 'fake-token';
     process.env['GITHUB_WORKFLOW_REF'] = 'TestOwner/TestRepo/.github/workflows/purview-scan.yml@refs/heads/main';
     runner = new GitHubActionsRunner(createConfig());
-    mockListWorkflowRuns.mockReset();
-    mockListRepoWorkflows.mockReset();
-    // Default: listRepoWorkflows returns a matching workflow with numeric ID 42
-    mockListRepoWorkflows.mockResolvedValue({
-      data: {
-        total_count: 1,
-        workflows: [{ id: 42, path: '.github/workflows/purview-scan.yml' }],
-      },
+    mockListWorkflowRunsForRepo.mockReset();
+    mockGetWorkflowRun.mockReset();
+    // Default: getWorkflowRun returns current run with workflow_id 42
+    mockGetWorkflowRun.mockResolvedValue({
+      data: { workflow_id: 42 },
     });
   });
 
@@ -110,8 +107,8 @@ describe('GitHubActionsRunner', () => {
       delete process.env['GITHUB_TOKEN'];
       const result = await callMethod(new Set(['sha1']));
       expect(result).toBeNull();
-      expect(mockListRepoWorkflows).not.toHaveBeenCalled();
-      expect(mockListWorkflowRuns).not.toHaveBeenCalled();
+      expect(mockGetWorkflowRun).not.toHaveBeenCalled();
+      expect(mockListWorkflowRunsForRepo).not.toHaveBeenCalled();
     });
 
     it('returns null when workflow ID cannot be determined', async () => {
@@ -119,56 +116,48 @@ describe('GitHubActionsRunner', () => {
       (github.context as any).workflow = '';
       const result = await callMethod(new Set(['sha1']));
       expect(result).toBeNull();
-      expect(mockListRepoWorkflows).not.toHaveBeenCalled();
-      expect(mockListWorkflowRuns).not.toHaveBeenCalled();
+      expect(mockGetWorkflowRun).not.toHaveBeenCalled();
+      expect(mockListWorkflowRunsForRepo).not.toHaveBeenCalled();
     });
 
-    it('extracts workflow filename from GITHUB_WORKFLOW_REF', async () => {
-      mockListWorkflowRuns.mockResolvedValue({
+    it('resolves numeric workflow ID from current run', async () => {
+      mockListWorkflowRunsForRepo.mockResolvedValue({
         data: { workflow_runs: [], total_count: 0 },
       });
 
       await callMethod(new Set(['sha1']));
 
-      // Should resolve filename then use numeric ID
-      expect(mockListRepoWorkflows).toHaveBeenCalledTimes(1);
-      expect(mockListWorkflowRuns).toHaveBeenCalledWith(
-        expect.objectContaining({
-          workflow_id: 42,
-        })
+      // Should get workflow run to resolve numeric ID
+      expect(mockGetWorkflowRun).toHaveBeenCalledWith(
+        expect.objectContaining({ run_id: 999 })
       );
+      // listWorkflowRunsForRepo is called (no workflow_id param — filtered client-side)
+      expect(mockListWorkflowRunsForRepo).toHaveBeenCalled();
     });
 
-    it('uses github.context.workflow as fallback for workflow ID', async () => {
+    it('still works without GITHUB_WORKFLOW_REF', async () => {
       delete process.env['GITHUB_WORKFLOW_REF'];
       (github.context as any).workflow = 'My Workflow';
-      mockListRepoWorkflows.mockResolvedValue({
-        data: {
-          total_count: 1,
-          workflows: [{ id: 99, path: 'My Workflow' }],
-        },
-      });
-      mockListWorkflowRuns.mockResolvedValue({
+      mockListWorkflowRunsForRepo.mockResolvedValue({
         data: { workflow_runs: [], total_count: 0 },
       });
 
       await callMethod(new Set(['sha1']));
 
-      expect(mockListWorkflowRuns).toHaveBeenCalledWith(
-        expect.objectContaining({
-          workflow_id: 99,
-        })
-      );
+      // Falls back to context.workflow for the workflowId string, but
+      // resolves numeric ID from the current run regardless
+      expect(mockGetWorkflowRun).toHaveBeenCalledTimes(1);
+      expect(mockListWorkflowRunsForRepo).toHaveBeenCalled();
     });
 
     it('passes branch from PR payload', async () => {
-      mockListWorkflowRuns.mockResolvedValue({
+      mockListWorkflowRunsForRepo.mockResolvedValue({
         data: { workflow_runs: [], total_count: 0 },
       });
 
       await callMethod(new Set(['sha1']));
 
-      expect(mockListWorkflowRuns).toHaveBeenCalledWith(
+      expect(mockListWorkflowRunsForRepo).toHaveBeenCalledWith(
         expect.objectContaining({
           branch: 'feature-branch',
         })
@@ -176,13 +165,13 @@ describe('GitHubActionsRunner', () => {
     });
 
     it('returns matching head_sha from first page', async () => {
-      mockListWorkflowRuns.mockResolvedValue({
+      mockListWorkflowRunsForRepo.mockResolvedValue({
         data: {
           total_count: 5,
           workflow_runs: [
-            { id: 1, head_sha: 'sha-other' },
-            { id: 2, head_sha: 'sha-match' },
-            { id: 3, head_sha: 'sha-old' },
+            { id: 1, head_sha: 'sha-other', workflow_id: 42 },
+            { id: 2, head_sha: 'sha-match', workflow_id: 42 },
+            { id: 3, head_sha: 'sha-old', workflow_id: 42 },
           ],
         },
       });
@@ -190,18 +179,18 @@ describe('GitHubActionsRunner', () => {
       const result = await callMethod(new Set(['sha-match', 'sha-newer']));
 
       expect(result).toBe('sha-match');
-      expect(mockListWorkflowRuns).toHaveBeenCalledTimes(1);
+      expect(mockListWorkflowRunsForRepo).toHaveBeenCalledTimes(1);
     });
 
     it('paginates to find matching SHA on later page', async () => {
-      mockListWorkflowRuns
+      mockListWorkflowRunsForRepo
         .mockResolvedValueOnce({
           data: {
             total_count: 6,
             workflow_runs: [
-              { id: 1, head_sha: 'sha-a' },
-              { id: 2, head_sha: 'sha-b' },
-              { id: 3, head_sha: 'sha-c' },
+              { id: 1, head_sha: 'sha-a', workflow_id: 42 },
+              { id: 2, head_sha: 'sha-b', workflow_id: 42 },
+              { id: 3, head_sha: 'sha-c', workflow_id: 42 },
             ],
           },
         })
@@ -209,9 +198,9 @@ describe('GitHubActionsRunner', () => {
           data: {
             total_count: 6,
             workflow_runs: [
-              { id: 4, head_sha: 'sha-d' },
-              { id: 5, head_sha: 'sha-target' },
-              { id: 6, head_sha: 'sha-f' },
+              { id: 4, head_sha: 'sha-d', workflow_id: 42 },
+              { id: 5, head_sha: 'sha-target', workflow_id: 42 },
+              { id: 6, head_sha: 'sha-f', workflow_id: 42 },
             ],
           },
         });
@@ -219,18 +208,18 @@ describe('GitHubActionsRunner', () => {
       const result = await callMethod(new Set(['sha-target']));
 
       expect(result).toBe('sha-target');
-      expect(mockListWorkflowRuns).toHaveBeenCalledTimes(2);
-      expect(mockListWorkflowRuns).toHaveBeenNthCalledWith(1, expect.objectContaining({ page: 1 }));
-      expect(mockListWorkflowRuns).toHaveBeenNthCalledWith(2, expect.objectContaining({ page: 2 }));
+      expect(mockListWorkflowRunsForRepo).toHaveBeenCalledTimes(2);
+      expect(mockListWorkflowRunsForRepo).toHaveBeenNthCalledWith(1, expect.objectContaining({ page: 1 }));
+      expect(mockListWorkflowRunsForRepo).toHaveBeenNthCalledWith(2, expect.objectContaining({ page: 2 }));
     });
 
     it('returns null when no runs match', async () => {
-      mockListWorkflowRuns.mockResolvedValue({
+      mockListWorkflowRunsForRepo.mockResolvedValue({
         data: {
           total_count: 2,
           workflow_runs: [
-            { id: 1, head_sha: 'sha-x' },
-            { id: 2, head_sha: 'sha-y' },
+            { id: 1, head_sha: 'sha-x', workflow_id: 42 },
+            { id: 2, head_sha: 'sha-y', workflow_id: 42 },
           ],
         },
       });
@@ -241,7 +230,7 @@ describe('GitHubActionsRunner', () => {
     });
 
     it('returns null when there are no workflow runs at all', async () => {
-      mockListWorkflowRuns.mockResolvedValue({
+      mockListWorkflowRunsForRepo.mockResolvedValue({
         data: { total_count: 0, workflow_runs: [] },
       });
 
@@ -251,14 +240,14 @@ describe('GitHubActionsRunner', () => {
     });
 
     it('stops paginating when all runs have been fetched', async () => {
-      mockListWorkflowRuns
+      mockListWorkflowRunsForRepo
         .mockResolvedValueOnce({
           data: {
             total_count: 4,
             workflow_runs: [
-              { id: 1, head_sha: 'sha-a' },
-              { id: 2, head_sha: 'sha-b' },
-              { id: 3, head_sha: 'sha-c' },
+              { id: 1, head_sha: 'sha-a', workflow_id: 42 },
+              { id: 2, head_sha: 'sha-b', workflow_id: 42 },
+              { id: 3, head_sha: 'sha-c', workflow_id: 42 },
             ],
           },
         })
@@ -266,7 +255,7 @@ describe('GitHubActionsRunner', () => {
           data: {
             total_count: 4,
             workflow_runs: [
-              { id: 4, head_sha: 'sha-d' },
+              { id: 4, head_sha: 'sha-d', workflow_id: 42 },
             ],
           },
         });
@@ -274,14 +263,14 @@ describe('GitHubActionsRunner', () => {
       const result = await callMethod(new Set(['sha-not-found']));
 
       expect(result).toBeNull();
-      expect(mockListWorkflowRuns).toHaveBeenCalledTimes(2);
+      expect(mockListWorkflowRunsForRepo).toHaveBeenCalledTimes(2);
     });
 
     it('returns null and logs permission message on 404', async () => {
       const httpError = new Error('Not Found') as any;
       httpError.status = 404;
       httpError.name = 'HttpError';
-      mockListWorkflowRuns.mockRejectedValue(httpError);
+      mockListWorkflowRunsForRepo.mockRejectedValue(httpError);
 
       const result = await callMethod(new Set(['sha1']));
 
@@ -289,46 +278,44 @@ describe('GitHubActionsRunner', () => {
     });
 
     it('returns null on non-404 errors', async () => {
-      mockListWorkflowRuns.mockRejectedValue(new Error('Network timeout'));
+      mockListWorkflowRunsForRepo.mockRejectedValue(new Error('Network timeout'));
 
       const result = await callMethod(new Set(['sha1']));
 
       expect(result).toBeNull();
     });
 
-    it('returns null when workflow is not found in repo', async () => {
-      mockListRepoWorkflows.mockResolvedValue({
-        data: { total_count: 0, workflows: [] },
-      });
+    it('returns null when getWorkflowRun fails', async () => {
+      mockGetWorkflowRun.mockRejectedValue(new Error('API error'));
 
       const result = await callMethod(new Set(['sha1']));
 
       expect(result).toBeNull();
-      expect(mockListWorkflowRuns).not.toHaveBeenCalled();
+      expect(mockListWorkflowRunsForRepo).not.toHaveBeenCalled();
     });
 
-    it('uses per_page of 3', async () => {
-      mockListWorkflowRuns.mockResolvedValue({
+    it('uses per_page of 10', async () => {
+      mockListWorkflowRunsForRepo.mockResolvedValue({
         data: { total_count: 0, workflow_runs: [] },
       });
 
       await callMethod(new Set(['sha1']));
 
-      expect(mockListWorkflowRuns).toHaveBeenCalledWith(
+      expect(mockListWorkflowRunsForRepo).toHaveBeenCalledWith(
         expect.objectContaining({
-          per_page: 3,
+          per_page: 10,
         })
       );
     });
 
     it('passes correct owner and repo from config', async () => {
-      mockListWorkflowRuns.mockResolvedValue({
+      mockListWorkflowRunsForRepo.mockResolvedValue({
         data: { total_count: 0, workflow_runs: [] },
       });
 
       await callMethod(new Set(['sha1']));
 
-      expect(mockListWorkflowRuns).toHaveBeenCalledWith(
+      expect(mockListWorkflowRunsForRepo).toHaveBeenCalledWith(
         expect.objectContaining({
           owner: 'TestOwner',
           repo: 'TestRepo',
@@ -336,25 +323,47 @@ describe('GitHubActionsRunner', () => {
       );
     });
 
-    it('uses numeric workflow ID in listWorkflowRuns call', async () => {
-      mockListRepoWorkflows.mockResolvedValue({
+    it('filters runs by workflow_id client-side', async () => {
+      mockGetWorkflowRun.mockResolvedValue({
+        data: { workflow_id: 77 },
+      });
+      mockListWorkflowRunsForRepo.mockResolvedValue({
         data: {
-          total_count: 2,
-          workflows: [
-            { id: 10, path: '.github/workflows/other.yml' },
-            { id: 42, path: '.github/workflows/purview-scan.yml' },
+          total_count: 3,
+          workflow_runs: [
+            { id: 1, head_sha: 'sha-other-wf', workflow_id: 99 },
+            { id: 2, head_sha: 'sha-match', workflow_id: 77 },
+            { id: 3, head_sha: 'sha-another-wf', workflow_id: 50 },
           ],
         },
       });
-      mockListWorkflowRuns.mockResolvedValue({
-        data: { total_count: 0, workflow_runs: [] },
+
+      const result = await callMethod(new Set(['sha-match']));
+
+      // Should match sha-match because it belongs to workflow 77
+      expect(result).toBe('sha-match');
+      // listWorkflowRunsForRepo is called without workflow_id in params
+      expect(mockListWorkflowRunsForRepo).toHaveBeenCalledWith(
+        expect.not.objectContaining({ workflow_id: expect.anything() })
+      );
+    });
+
+    it('skips runs from other workflows when filtering', async () => {
+      mockListWorkflowRunsForRepo.mockResolvedValue({
+        data: {
+          total_count: 3,
+          workflow_runs: [
+            { id: 1, head_sha: 'sha-target', workflow_id: 99 },
+            { id: 2, head_sha: 'sha-other', workflow_id: 42 },
+            { id: 3, head_sha: 'sha-third', workflow_id: 50 },
+          ],
+        },
       });
 
-      await callMethod(new Set(['sha1']));
+      // sha-target exists in the set but belongs to workflow 99, not 42
+      const result = await callMethod(new Set(['sha-target']));
 
-      expect(mockListWorkflowRuns).toHaveBeenCalledWith(
-        expect.objectContaining({ workflow_id: 42 })
-      );
+      expect(result).toBeNull();
     });
   });
 });

@@ -29,10 +29,5 @@ export declare class FullScanService {
     private processFilesByUser;
     private writeStateMarker;
     private sendContentActivities;
-    /**
-     * Resolves a workflow filename to its numeric ID by listing the repo's workflows.
-     * Returns null if no matching workflow is found.
-     */
-    private resolveWorkflowId;
 }
 //# sourceMappingURL=fullScanService.d.ts.map

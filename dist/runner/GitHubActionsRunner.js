@@ -303,25 +303,27 @@ export class GitHubActionsRunner {
                 this.logger.warn('Could not determine workflow ID for commit dedup');
                 return null;
             }
-            // Resolve the numeric workflow ID to avoid 404 when the filename
-            // isn't recognised (e.g. workflow has never completed a run yet).
-            const numericWorkflowId = await this.resolveWorkflowId(octokit, workflowId);
+            // Resolve the numeric workflow ID from the current run — this is the most
+            // reliable approach since the current run always knows its own workflow.
+            const numericWorkflowId = await this.resolveWorkflowId(octokit);
             if (numericWorkflowId === null) {
-                this.logger.info(`Workflow '${workflowId}' not found in repo — skipping commit dedup`);
+                this.logger.info('Could not resolve workflow ID from current run — skipping commit dedup');
                 return null;
             }
             // Scope to the PR head branch if available
             const branch = github.context.payload.pull_request?.['head']?.ref;
-            const perPage = 3;
+            // Use listWorkflowRunsForRepo (not listWorkflowRuns) because in
+            // cross-repo reusable-workflow setups the numeric workflow_id returned
+            // by getWorkflowRun belongs to the *external* workflow-definition repo,
+            // not the target repo.  listWorkflowRuns would 404 in that case.
+            const perPage = 10;
             let page = 1;
             let totalFetched = 0;
             while (true) {
-                const { data: runs } = await octokit.rest.actions.listWorkflowRuns({
+                const { data: runs } = await octokit.rest.actions.listWorkflowRunsForRepo({
                     owner: this.config.repository.owner,
                     repo: this.config.repository.repo,
-                    workflow_id: numericWorkflowId,
-                    status: 'completed',
-                    conclusion: 'success',
+                    status: 'success',
                     ...(branch ? { branch } : {}),
                     per_page: perPage,
                     page,
@@ -329,14 +331,16 @@ export class GitHubActionsRunner {
                 if (runs.workflow_runs.length === 0) {
                     break;
                 }
-                for (const run of runs.workflow_runs) {
+                // Filter to only runs belonging to our workflow
+                const matchingRuns = runs.workflow_runs.filter((r) => r.workflow_id === numericWorkflowId);
+                for (const run of matchingRuns) {
                     if (commitShas.has(run.head_sha)) {
                         this.logger.info(`Found matching head SHA ${run.head_sha} from workflow run ${run.id} (page ${page})`);
                         return run.head_sha;
                     }
                 }
                 totalFetched += runs.workflow_runs.length;
-                this.logger.info(`Checked ${totalFetched} successful run(s) so far, no match in commit list yet`);
+                this.logger.info(`Checked ${totalFetched} run(s) so far (${matchingRuns.length} matched workflow), no match in commit list yet`);
                 if (totalFetched >= runs.total_count) {
                     break;
                 }
@@ -357,26 +361,26 @@ export class GitHubActionsRunner {
         }
     }
     /**
-     * Resolves a workflow filename to its numeric ID by listing the repo's workflows.
-     * Returns null if no matching workflow is found.
+     * Resolves the numeric workflow ID by inspecting the current workflow run.
      */
-    async resolveWorkflowId(octokit, workflowFilename) {
+    async resolveWorkflowId(octokit) {
         try {
-            const { data } = await octokit.rest.actions.listRepoWorkflows({
+            const runId = parseInt(this.config.repository.runId, 10);
+            if (!runId) {
+                this.logger.warn('No run ID available to resolve workflow ID');
+                return null;
+            }
+            const { data: run } = await octokit.rest.actions.getWorkflowRun({
                 owner: this.config.repository.owner,
                 repo: this.config.repository.repo,
-                per_page: 100,
+                run_id: runId,
             });
-            const match = data.workflows.find((w) => w.path.endsWith(`/${workflowFilename}`) || w.path === workflowFilename);
-            if (match) {
-                this.logger.info(`Resolved workflow '${workflowFilename}' to numeric ID ${match.id}`);
-                return match.id;
-            }
-            this.logger.warn(`No workflow matching '${workflowFilename}' found among ${data.total_count} repo workflows`);
-            return null;
+            const wfId = run.workflow_id;
+            this.logger.info(`Resolved workflow ID ${wfId} from current run ${runId}`);
+            return wfId;
         }
         catch (error) {
-            this.logger.warn(`Failed to list repo workflows for ID resolution`, { error });
+            this.logger.warn('Failed to resolve workflow ID from current run', { error });
             return null;
         }
     }

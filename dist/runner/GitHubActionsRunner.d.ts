@@ -18,8 +18,7 @@ export declare class GitHubActionsRunner {
      */
     private findLastProcessedCommitSha;
     /**
-     * Resolves a workflow filename to its numeric ID by listing the repo's workflows.
-     * Returns null if no matching workflow is found.
+     * Resolves the numeric workflow ID by inspecting the current workflow run.
      */
     private resolveWorkflowId;
 }

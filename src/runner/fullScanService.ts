@@ -252,29 +252,48 @@ export class FullScanService {
         return false;
       }
 
-      // Resolve the numeric workflow ID to avoid 404 when the filename
-      // isn't recognised (e.g. workflow has never completed a run yet).
-      const numericWorkflowId = await this.resolveWorkflowId(octokit, workflowId, targetOwner, targetRepo);
+      // Resolve the numeric workflow ID from the current run
+      const runId = parseInt(github.context.runId.toString(), 10);
+      let numericWorkflowId: number | null = null;
+      if (runId) {
+        try {
+          const { data: run } = await octokit.rest.actions.getWorkflowRun({
+            owner: targetOwner,
+            repo: targetRepo,
+            run_id: runId,
+          });
+          numericWorkflowId = run.workflow_id;
+          this.logger.info(`Resolved workflow ID ${numericWorkflowId} from current run ${runId}`);
+        } catch (err) {
+          this.logger.warn('Failed to resolve workflow ID from current run', { error: err });
+        }
+      }
       if (numericWorkflowId === null) {
-        this.logger.info(`Workflow '${workflowId}' not found in repo — defaulting to first run`);
+        this.logger.info('Could not resolve workflow ID — defaulting to first run');
         return true;
       }
 
-      const { data: workflowRuns } = await octokit.rest.actions.listWorkflowRuns({
+      // Use listWorkflowRunsForRepo (not listWorkflowRuns) because in
+      // cross-repo reusable-workflow setups the numeric workflow_id belongs
+      // to the external workflow-definition repo, causing 404 on the
+      // per-workflow endpoint.
+      const { data: allRuns } = await octokit.rest.actions.listWorkflowRunsForRepo({
         owner: targetOwner,
         repo: targetRepo,
-        workflow_id: numericWorkflowId,
-        status: 'completed',
-        conclusion: 'success',
-        per_page: 1,
+        status: 'success' as any,
+        per_page: 20,
       });
-      
-      // If there are no completed runs, this is the first run
-      const firstRun = workflowRuns.total_count === 0;
-      
-      this.logger.info(firstRun 
+
+      const matchingCount = allRuns.workflow_runs.filter(
+        (r: any) => r.workflow_id === numericWorkflowId
+      ).length;
+
+      // If there are no completed runs for our workflow, this is the first run
+      const firstRun = matchingCount === 0;
+
+      this.logger.info(firstRun
         ? 'First workflow run detected based on workflow history'
-        : `Previous workflow runs found (${workflowRuns.total_count} completed runs), not first run`
+        : `Previous workflow runs found (${matchingCount} successful run(s) in first page), not first run`
       );
       
       return firstRun;
@@ -388,37 +407,6 @@ export class FullScanService {
         this.logger.error(`ContentActivities upload failed for ${req.contentMetadata.contentEntries[0]?.identifier}: ${result.error}`);
         failedPayloads.push(req.id);
       }
-    }
-  }
-
-  /**
-   * Resolves a workflow filename to its numeric ID by listing the repo's workflows.
-   * Returns null if no matching workflow is found.
-   */
-  private async resolveWorkflowId(
-    octokit: ReturnType<typeof github.getOctokit>,
-    workflowFilename: string,
-    owner: string,
-    repo: string
-  ): Promise<number | null> {
-    try {
-      const { data } = await octokit.rest.actions.listRepoWorkflows({
-        owner,
-        repo,
-        per_page: 100,
-      });
-      const match = data.workflows.find(
-        (w: { path: string }) => w.path.endsWith(`/${workflowFilename}`) || w.path === workflowFilename
-      );
-      if (match) {
-        this.logger.info(`Resolved workflow '${workflowFilename}' to numeric ID ${match.id}`);
-        return match.id;
-      }
-      this.logger.warn(`No workflow matching '${workflowFilename}' found among ${data.total_count} repo workflows`);
-      return null;
-    } catch (error) {
-      this.logger.warn(`Failed to list repo workflows for ID resolution`, { error });
-      return null;
     }
   }
 }

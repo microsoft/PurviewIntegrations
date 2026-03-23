@@ -62633,12 +62633,22 @@ class FileProcessor {
                 this.logger.info(`Skipping binary file: ${file.filename}`);
                 continue;
             }
+            let fileContent = file.patch || "";
+            let fileSize = file.patch ? file.patch.length : 0;
+            // GitHub API omits .patch for large diffs — compute the diff ourselves
+            if (!file.patch && file.status !== 'removed') {
+                const diff = await this.computeDiff(file.filename, file.status || 'modified', commit.parents?.map((p) => p.sha) || [], commitSha);
+                if (diff !== null) {
+                    fileContent = diff;
+                    fileSize = diff.length;
+                }
+            }
             const metadata = {
                 path: file.filename,
-                size: file.patch ? file.patch.length : 0,
+                size: fileSize,
                 encoding: 'utf-8',
                 sha: file.sha,
-                content: file.patch || "",
+                content: fileContent,
                 authorLogin: commit.author?.login || commit.committer?.login || null,
                 authorEmail: commit.commit.author?.email || commit.commit.committer?.email || null,
                 authorId: userId,
@@ -62651,6 +62661,214 @@ class FileProcessor {
             fileMetadata.push(metadata);
         }
         return fileMetadata;
+    }
+    /**
+     * Computes a unified diff for a file when the commit API omits the patch.
+     * Fetches the file content at both the parent and current commits via the
+     * GitHub Contents API, then produces a unified diff.
+     */
+    async computeDiff(filePath, status, parentShas, commitSha) {
+        try {
+            this.logger.info(`Patch missing for ${filePath} — computing diff (status: ${status})`);
+            const currentContent = await this.fetchFileContent(filePath, commitSha);
+            if (currentContent === null) {
+                return null;
+            }
+            let parentContent = null;
+            if (status !== 'added' && parentShas.length > 0) {
+                parentContent = await this.fetchFileContent(filePath, parentShas[0]);
+            }
+            const oldLines = parentContent ? parentContent.split('\n') : [];
+            const newLines = currentContent.split('\n');
+            return this.generateUnifiedDiff(filePath, oldLines, newLines);
+        }
+        catch (error) {
+            this.logger.warn(`Failed to compute diff for ${filePath}`, { error });
+            return null;
+        }
+    }
+    /**
+     * Fetches file content from the GitHub API at a specific ref.
+     * Uses the Contents API for small files (≤1MB base64) and falls back to
+     * the raw download URL for larger files.
+     */
+    async fetchFileContent(filePath, ref) {
+        try {
+            const { data } = await this.octokit.rest.repos.getContent({
+                owner: this.config.repository.owner,
+                repo: this.config.repository.repo,
+                path: filePath,
+                ref,
+            });
+            if (Array.isArray(data)) {
+                this.logger.warn(`${filePath} is a directory at ${ref}`);
+                return null;
+            }
+            // For files ≤1MB the API returns base64 content inline
+            if ('content' in data && data.content) {
+                return Buffer.from(data.content, 'base64').toString('utf-8');
+            }
+            // For larger files, download via the raw URL
+            if ('download_url' in data && data.download_url) {
+                this.logger.info(`File ${filePath} too large for Contents API — downloading raw content`);
+                const response = await fetch(data.download_url);
+                if (!response.ok) {
+                    this.logger.warn(`Raw download failed for ${filePath}: ${response.status}`);
+                    return null;
+                }
+                return await response.text();
+            }
+            this.logger.warn(`${filePath} has no content or download URL at ${ref}`);
+            return null;
+        }
+        catch (error) {
+            this.logger.warn(`Failed to fetch content for ${filePath} at ${ref}`, { error });
+            return null;
+        }
+    }
+    /**
+     * Produces a unified diff string from two arrays of lines.
+     * Uses a simple LCS-based approach to generate hunks matching standard
+     * unified diff format (the same format GitHub returns in .patch).
+     */
+    generateUnifiedDiff(filePath, oldLines, newLines) {
+        const hunks = this.computeHunks(oldLines, newLines);
+        if (hunks.length === 0) {
+            return '';
+        }
+        const parts = [];
+        parts.push(`--- a/${filePath}`);
+        parts.push(`+++ b/${filePath}`);
+        for (const hunk of hunks) {
+            parts.push(hunk);
+        }
+        return parts.join('\n');
+    }
+    /**
+     * Computes unified-diff hunks from old and new line arrays.
+     * Groups consecutive changes with up to 3 lines of context around each change.
+     */
+    computeHunks(oldLines, newLines) {
+        const CONTEXT = 3;
+        // Build an edit script using a simple O(NM) LCS approach
+        const edits = this.buildEditScript(oldLines, newLines);
+        // Group edits into hunks with context lines
+        const hunks = [];
+        let i = 0;
+        while (i < edits.length) {
+            // Skip unchanged lines until we find a change
+            if (edits[i].type === 'equal') {
+                i++;
+                continue;
+            }
+            // Found a change — start a new hunk with leading context
+            const contextStart = Math.max(0, i - CONTEXT);
+            let hunkEnd = i;
+            // Extend hunk to include all nearby changes (within CONTEXT*2 lines of each other)
+            while (hunkEnd < edits.length) {
+                if (edits[hunkEnd].type !== 'equal') {
+                    hunkEnd++;
+                    continue;
+                }
+                // Look ahead to see if there's another change within context range
+                let nextChange = hunkEnd;
+                while (nextChange < edits.length && edits[nextChange].type === 'equal') {
+                    nextChange++;
+                }
+                if (nextChange < edits.length && nextChange - hunkEnd <= CONTEXT * 2) {
+                    hunkEnd = nextChange + 1;
+                }
+                else {
+                    break;
+                }
+            }
+            // Add trailing context
+            const contextEnd = Math.min(edits.length, hunkEnd + CONTEXT);
+            // Calculate line numbers for the hunk header
+            let oldStart = 1, oldCount = 0, newStart = 1, newCount = 0;
+            // Count lines before this hunk
+            for (let j = 0; j < contextStart; j++) {
+                if (edits[j].type !== 'insert')
+                    oldStart++;
+                if (edits[j].type !== 'delete')
+                    newStart++;
+            }
+            const hunkLines = [];
+            for (let j = contextStart; j < contextEnd; j++) {
+                const edit = edits[j];
+                if (edit.type === 'equal') {
+                    hunkLines.push(` ${edit.line}`);
+                    oldCount++;
+                    newCount++;
+                }
+                else if (edit.type === 'delete') {
+                    hunkLines.push(`-${edit.line}`);
+                    oldCount++;
+                }
+                else {
+                    hunkLines.push(`+${edit.line}`);
+                    newCount++;
+                }
+            }
+            hunks.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@\n${hunkLines.join('\n')}`);
+            i = contextEnd;
+        }
+        return hunks;
+    }
+    /**
+     * Builds an edit script (sequence of equal/delete/insert operations)
+     * from two arrays of lines using LCS-based diff.
+     * For files exceeding a line count threshold, falls back to a simple
+     * delete-all/insert-all to avoid excessive memory usage.
+     */
+    buildEditScript(oldLines, newLines) {
+        const MAX_LINES_FOR_LCS = 10_000;
+        const m = oldLines.length;
+        const n = newLines.length;
+        // For very large files, the O(m*n) DP table would use too much memory.
+        // Fall back to a simple delete-old/insert-new diff.
+        if (m > MAX_LINES_FOR_LCS || n > MAX_LINES_FOR_LCS) {
+            const edits = [];
+            for (const line of oldLines) {
+                edits.push({ type: 'delete', line });
+            }
+            for (const line of newLines) {
+                edits.push({ type: 'insert', line });
+            }
+            return edits;
+        }
+        // Build the full LCS DP table for backtracking
+        const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+        for (let i = 1; i <= m; i++) {
+            for (let j = 1; j <= n; j++) {
+                if (oldLines[i - 1] === newLines[j - 1]) {
+                    dp[i][j] = dp[i - 1][j - 1] + 1;
+                }
+                else {
+                    dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+                }
+            }
+        }
+        // Backtrack to produce the edit script
+        const edits = [];
+        let oi = m, ni = n;
+        while (oi > 0 || ni > 0) {
+            if (oi > 0 && ni > 0 && oldLines[oi - 1] === newLines[ni - 1]) {
+                edits.push({ type: 'equal', line: oldLines[oi - 1] });
+                oi--;
+                ni--;
+            }
+            else if (ni > 0 && (oi === 0 || dp[oi][ni - 1] >= dp[oi - 1][ni])) {
+                edits.push({ type: 'insert', line: newLines[ni - 1] });
+                ni--;
+            }
+            else {
+                edits.push({ type: 'delete', line: oldLines[oi - 1] });
+                oi--;
+            }
+        }
+        edits.reverse();
+        return edits;
     }
     isCommitEmpty(commitSha) {
         if (commitSha && commitSha !== this.emptySha) {
@@ -63663,26 +63881,43 @@ class FullScanService {
                 this.logger.warn('Could not determine workflow file path from GITHUB_WORKFLOW_REF or github.context, defaulting to non-first run');
                 return false;
             }
-            // Resolve the numeric workflow ID to avoid 404 when the filename
-            // isn't recognised (e.g. workflow has never completed a run yet).
-            const numericWorkflowId = await this.resolveWorkflowId(octokit, workflowId, targetOwner, targetRepo);
+            // Resolve the numeric workflow ID from the current run
+            const runId = parseInt(github_context.runId.toString(), 10);
+            let numericWorkflowId = null;
+            if (runId) {
+                try {
+                    const { data: run } = await octokit.rest.actions.getWorkflowRun({
+                        owner: targetOwner,
+                        repo: targetRepo,
+                        run_id: runId,
+                    });
+                    numericWorkflowId = run.workflow_id;
+                    this.logger.info(`Resolved workflow ID ${numericWorkflowId} from current run ${runId}`);
+                }
+                catch (err) {
+                    this.logger.warn('Failed to resolve workflow ID from current run', { error: err });
+                }
+            }
             if (numericWorkflowId === null) {
-                this.logger.info(`Workflow '${workflowId}' not found in repo — defaulting to first run`);
+                this.logger.info('Could not resolve workflow ID — defaulting to first run');
                 return true;
             }
-            const { data: workflowRuns } = await octokit.rest.actions.listWorkflowRuns({
+            // Use listWorkflowRunsForRepo (not listWorkflowRuns) because in
+            // cross-repo reusable-workflow setups the numeric workflow_id belongs
+            // to the external workflow-definition repo, causing 404 on the
+            // per-workflow endpoint.
+            const { data: allRuns } = await octokit.rest.actions.listWorkflowRunsForRepo({
                 owner: targetOwner,
                 repo: targetRepo,
-                workflow_id: numericWorkflowId,
-                status: 'completed',
-                conclusion: 'success',
-                per_page: 1,
+                status: 'success',
+                per_page: 20,
             });
-            // If there are no completed runs, this is the first run
-            const firstRun = workflowRuns.total_count === 0;
+            const matchingCount = allRuns.workflow_runs.filter((r) => r.workflow_id === numericWorkflowId).length;
+            // If there are no completed runs for our workflow, this is the first run
+            const firstRun = matchingCount === 0;
             this.logger.info(firstRun
                 ? 'First workflow run detected based on workflow history'
-                : `Previous workflow runs found (${workflowRuns.total_count} completed runs), not first run`);
+                : `Previous workflow runs found (${matchingCount} successful run(s) in first page), not first run`);
             return firstRun;
         }
         catch (error) {
@@ -63779,30 +64014,6 @@ class FullScanService {
                 this.logger.error(`ContentActivities upload failed for ${req.contentMetadata.contentEntries[0]?.identifier}: ${result.error}`);
                 failedPayloads.push(req.id);
             }
-        }
-    }
-    /**
-     * Resolves a workflow filename to its numeric ID by listing the repo's workflows.
-     * Returns null if no matching workflow is found.
-     */
-    async resolveWorkflowId(octokit, workflowFilename, owner, repo) {
-        try {
-            const { data } = await octokit.rest.actions.listRepoWorkflows({
-                owner,
-                repo,
-                per_page: 100,
-            });
-            const match = data.workflows.find((w) => w.path.endsWith(`/${workflowFilename}`) || w.path === workflowFilename);
-            if (match) {
-                this.logger.info(`Resolved workflow '${workflowFilename}' to numeric ID ${match.id}`);
-                return match.id;
-            }
-            this.logger.warn(`No workflow matching '${workflowFilename}' found among ${data.total_count} repo workflows`);
-            return null;
-        }
-        catch (error) {
-            this.logger.warn(`Failed to list repo workflows for ID resolution`, { error });
-            return null;
         }
     }
 }
@@ -64113,25 +64324,27 @@ class GitHubActionsRunner {
                 this.logger.warn('Could not determine workflow ID for commit dedup');
                 return null;
             }
-            // Resolve the numeric workflow ID to avoid 404 when the filename
-            // isn't recognised (e.g. workflow has never completed a run yet).
-            const numericWorkflowId = await this.resolveWorkflowId(octokit, workflowId);
+            // Resolve the numeric workflow ID from the current run — this is the most
+            // reliable approach since the current run always knows its own workflow.
+            const numericWorkflowId = await this.resolveWorkflowId(octokit);
             if (numericWorkflowId === null) {
-                this.logger.info(`Workflow '${workflowId}' not found in repo — skipping commit dedup`);
+                this.logger.info('Could not resolve workflow ID from current run — skipping commit dedup');
                 return null;
             }
             // Scope to the PR head branch if available
             const branch = github_context.payload.pull_request?.['head']?.ref;
-            const perPage = 3;
+            // Use listWorkflowRunsForRepo (not listWorkflowRuns) because in
+            // cross-repo reusable-workflow setups the numeric workflow_id returned
+            // by getWorkflowRun belongs to the *external* workflow-definition repo,
+            // not the target repo.  listWorkflowRuns would 404 in that case.
+            const perPage = 10;
             let page = 1;
             let totalFetched = 0;
             while (true) {
-                const { data: runs } = await octokit.rest.actions.listWorkflowRuns({
+                const { data: runs } = await octokit.rest.actions.listWorkflowRunsForRepo({
                     owner: this.config.repository.owner,
                     repo: this.config.repository.repo,
-                    workflow_id: numericWorkflowId,
-                    status: 'completed',
-                    conclusion: 'success',
+                    status: 'success',
                     ...(branch ? { branch } : {}),
                     per_page: perPage,
                     page,
@@ -64139,14 +64352,16 @@ class GitHubActionsRunner {
                 if (runs.workflow_runs.length === 0) {
                     break;
                 }
-                for (const run of runs.workflow_runs) {
+                // Filter to only runs belonging to our workflow
+                const matchingRuns = runs.workflow_runs.filter((r) => r.workflow_id === numericWorkflowId);
+                for (const run of matchingRuns) {
                     if (commitShas.has(run.head_sha)) {
                         this.logger.info(`Found matching head SHA ${run.head_sha} from workflow run ${run.id} (page ${page})`);
                         return run.head_sha;
                     }
                 }
                 totalFetched += runs.workflow_runs.length;
-                this.logger.info(`Checked ${totalFetched} successful run(s) so far, no match in commit list yet`);
+                this.logger.info(`Checked ${totalFetched} run(s) so far (${matchingRuns.length} matched workflow), no match in commit list yet`);
                 if (totalFetched >= runs.total_count) {
                     break;
                 }
@@ -64167,26 +64382,26 @@ class GitHubActionsRunner {
         }
     }
     /**
-     * Resolves a workflow filename to its numeric ID by listing the repo's workflows.
-     * Returns null if no matching workflow is found.
+     * Resolves the numeric workflow ID by inspecting the current workflow run.
      */
-    async resolveWorkflowId(octokit, workflowFilename) {
+    async resolveWorkflowId(octokit) {
         try {
-            const { data } = await octokit.rest.actions.listRepoWorkflows({
+            const runId = parseInt(this.config.repository.runId, 10);
+            if (!runId) {
+                this.logger.warn('No run ID available to resolve workflow ID');
+                return null;
+            }
+            const { data: run } = await octokit.rest.actions.getWorkflowRun({
                 owner: this.config.repository.owner,
                 repo: this.config.repository.repo,
-                per_page: 100,
+                run_id: runId,
             });
-            const match = data.workflows.find((w) => w.path.endsWith(`/${workflowFilename}`) || w.path === workflowFilename);
-            if (match) {
-                this.logger.info(`Resolved workflow '${workflowFilename}' to numeric ID ${match.id}`);
-                return match.id;
-            }
-            this.logger.warn(`No workflow matching '${workflowFilename}' found among ${data.total_count} repo workflows`);
-            return null;
+            const wfId = run.workflow_id;
+            this.logger.info(`Resolved workflow ID ${wfId} from current run ${runId}`);
+            return wfId;
         }
         catch (error) {
-            this.logger.warn(`Failed to list repo workflows for ID resolution`, { error });
+            this.logger.warn('Failed to resolve workflow ID from current run', { error });
             return null;
         }
     }
