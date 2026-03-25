@@ -1,4 +1,4 @@
-import { ActionConfig, PurviewPayload, ApiResponse, ProcessContentBatchRequest, ProcessContentRequest, ProcessContentResponse, UploadSignalRequest, ProtectionScopesRequest, ProtectionScopesResponse, GraphUserInfoContainer } from '../config/types';
+import { ActionConfig, ApiResponse, ProcessContentBatchRequest, ProcessContentRequest, ProcessContentResponse, UploadSignalRequest, ProtectionScopesRequest, ProtectionScopesResponse, GraphUserInfoContainer } from '../config/types';
 export declare class PurviewClient {
     private readonly config;
     private readonly logger;
@@ -7,7 +7,6 @@ export declare class PurviewClient {
     private readonly baseUrl;
     constructor(config: ActionConfig);
     setAuthToken(token: string): void;
-    queueConversationMessage(payload: PurviewPayload): Promise<ApiResponse>;
     processContentAsync(payload: ProcessContentBatchRequest): Promise<ApiResponse>;
     processContent(userId: string, request: ProcessContentRequest, scopeIdentifier: string, inline?: boolean): Promise<ApiResponse<ProcessContentResponse>>;
     uploadSignal(payload: UploadSignalRequest): Promise<ApiResponse>;

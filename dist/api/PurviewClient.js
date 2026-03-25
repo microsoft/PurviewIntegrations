@@ -15,25 +15,6 @@ export class PurviewClient {
     setAuthToken(token) {
         this.authToken = token;
     }
-    async queueConversationMessage(payload) {
-        if (!this.authToken) {
-            throw new Error('Authentication token not set');
-        }
-        this.logger.info(`Queuing conversation message`);
-        const endpoint = `${this.baseUrl}/conversations/${payload.conversationId}/messages`;
-        let payloadString = JSON.stringify(payload, this.jsonReplacer);
-        try {
-            const result = await this.retryHandler.executeWithRetry(async () => this.sendRequest(endpoint, payloadString, 'POST', {}, 'QueueConversationMessage'), 'QueueConversationMessage');
-            return result;
-        }
-        catch (error) {
-            this.logger.error('Failed to queue conversation message', { error });
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : 'Unknown error'
-            };
-        }
-    }
     async processContentAsync(payload) {
         if (!this.authToken) {
             throw new Error('Authentication token not set');

@@ -10,55 +10,6 @@ export class PayloadBuilder {
         this.config = config;
         this.logger = new Logger('PayloadBuilder');
     }
-    async build(files) {
-        const conversationId = this.generateConversationId();
-        const allMessages = [];
-        // Add metadata message
-        allMessages.push(this.createMetadataMessage(files));
-        // Add file messages
-        for (const file of files) {
-            const fileMessages = await this.createFileMessages(file);
-            allMessages.push(...fileMessages);
-        }
-        // Split messages into payloads of <= maxPayloadSize
-        const payloads = [];
-        let currentMessages = [];
-        let currentSize = 0;
-        const baseOverhead = 300; // JSON overhead for metadata, conversationId, etc.
-        for (const msg of allMessages) {
-            const msgSize = JSON.stringify(msg).length;
-            if (currentMessages.length > 0 && currentSize + msgSize + baseOverhead > this.maxPayloadSize) {
-                payloads.push(this.createPayloadObject(conversationId, currentMessages, files.length));
-                currentMessages = [];
-                currentSize = 0;
-            }
-            currentMessages.push(msg);
-            currentSize += msgSize;
-        }
-        if (currentMessages.length > 0) {
-            payloads.push(this.createPayloadObject(conversationId, currentMessages, files.length));
-        }
-        this.logger.debug('Payload built', {
-            conversationId,
-            payloadCount: payloads.length,
-            totalMessages: allMessages.length
-        });
-        return payloads;
-    }
-    createPayloadObject(conversationId, messages, fileCount) {
-        return {
-            conversationId,
-            messages,
-            metadata: {
-                repository: `${this.config.repository.owner}/${this.config.repository.repo}`,
-                branch: this.config.repository.branch,
-                commit: this.config.repository.sha,
-                runId: this.config.repository.runId,
-                timestamp: new Date().toISOString(),
-                fileCount
-            }
-        };
-    }
     buildProtectionScopesRequest() {
         const request = {
             activities: PayloadBuilder.scopeActivity,
@@ -246,7 +197,7 @@ export class PayloadBuilder {
     }
     buildUploadSignalRequest(files, prInfo) {
         const requests = [];
-        const conversationId = crypto.randomUUID();
+        const conversationId = crypto.randomUUID() + '@GA';
         let seqNum = 0;
         for (const file of files) {
             this.logger.info(`Building upload signal request for file: ${file.path}`);
@@ -257,7 +208,7 @@ export class PayloadBuilder {
             const singleSize = JSON.stringify(singleCTP).length + 200; // account for wrapper fields
             if (singleSize <= this.maxPayloadSize) {
                 requests.push({
-                    id: crypto.randomUUID(),
+                    id: crypto.randomUUID() + '@GA',
                     userId,
                     userEmail,
                     scopeIdentifier: "",
@@ -274,7 +225,7 @@ export class PayloadBuilder {
                     const isLastChunk = i + maxContentPerChunk >= content.length;
                     const chunkCTP = this.createContentToProcess(file, conversationId, seqNum, !isLastChunk, chunk);
                     requests.push({
-                        id: crypto.randomUUID(),
+                        id: crypto.randomUUID() + '@GA',
                         userId,
                         userEmail,
                         scopeIdentifier: "",
@@ -289,7 +240,7 @@ export class PayloadBuilder {
     }
     buildProcessContentBatchRequest(files) {
         const allItems = [];
-        const conversationId = crypto.randomUUID();
+        const conversationId = crypto.randomUUID() + '@GA';
         let seqNum = 0;
         for (const file of files) {
             const content = file.content || `File: ${file.path} (${file.size} bytes)`;
@@ -385,110 +336,6 @@ export class PayloadBuilder {
                 }
             }
         };
-    }
-    createMetadataMessage(files) {
-        const summary = {
-            totalFiles: files.length,
-            totalSize: files.reduce((sum, f) => sum + f.size, 0),
-            fileTypes: this.getFileTypes(files),
-            repository: this.config.repository
-        };
-        return {
-            id: this.generateMessageId(),
-            content: JSON.stringify(summary, null, 2),
-            contentType: 'metadata',
-            timestamp: new Date().toISOString()
-        };
-    }
-    async createFileMessages(file) {
-        const messages = [];
-        // If content is included and large, chunk it
-        if (file.content && file.content.length > 50000) {
-            const chunks = this.chunkContent(file.content);
-            for (let i = 0; i < chunks.length; i++) {
-                messages.push({
-                    id: this.generateMessageId(),
-                    content: chunks[i], // Non-null assertion safe due to chunkContent implementation
-                    contentType: 'file',
-                    timestamp: new Date().toISOString(),
-                    fileInfo: {
-                        path: file.path,
-                        size: file.size,
-                        sha: file.sha,
-                        language: this.detectLanguage(file.path)
-                    }
-                });
-            }
-        }
-        else {
-            // Single message for small files
-            messages.push({
-                id: this.generateMessageId(),
-                content: file.content || `File: ${file.path} (${file.size} bytes)`,
-                contentType: 'file',
-                timestamp: new Date().toISOString(),
-                fileInfo: {
-                    path: file.path,
-                    size: file.size,
-                    sha: file.sha,
-                    language: this.detectLanguage(file.path)
-                }
-            });
-        }
-        return messages;
-    }
-    chunkContent(content, chunkSize = 50000) {
-        const chunks = [];
-        for (let i = 0; i < content.length; i += chunkSize) {
-            chunks.push(content.substring(i, i + chunkSize));
-        }
-        return chunks;
-    }
-    generateConversationId() {
-        const timestamp = Date.now();
-        const random = Math.random().toString(36).substring(2, 9);
-        return `conv-${this.config.repository.runId}-${timestamp}-${random}`;
-    }
-    generateMessageId() {
-        return `msg-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-    }
-    getFileTypes(files) {
-        const types = {};
-        for (const file of files) {
-            const ext = file.path.split('.').pop() || 'unknown';
-            types[ext] = (types[ext] || 0) + 1;
-        }
-        return types;
-    }
-    detectLanguage(filePath) {
-        const languageMap = {
-            '.js': 'javascript',
-            '.ts': 'typescript',
-            '.py': 'python',
-            '.java': 'java',
-            '.cs': 'csharp',
-            '.go': 'go',
-            '.rs': 'rust',
-            '.cpp': 'cpp',
-            '.c': 'c',
-            '.rb': 'ruby',
-            '.php': 'php',
-            '.swift': 'swift',
-            '.kt': 'kotlin',
-            '.scala': 'scala',
-            '.r': 'r',
-            '.m': 'matlab',
-            '.jl': 'julia',
-            '.sh': 'shell',
-            '.ps1': 'powershell',
-            '.yml': 'yaml',
-            '.yaml': 'yaml',
-            '.json': 'json',
-            '.xml': 'xml',
-            '.md': 'markdown'
-        };
-        const ext = filePath.match(/\.[^.]+$/)?.[0];
-        return ext ? languageMap[ext] : undefined;
     }
 }
 //# sourceMappingURL=payloadBuilder.js.map

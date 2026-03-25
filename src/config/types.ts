@@ -57,36 +57,6 @@ export interface FileMetadata {
   commitTimestamp?: string;
 }
 
-export interface PurviewPayload {
-  conversationId: string;
-  messages: PurviewMessage[];
-  metadata: PayloadMetadata;
-}
-
-export interface PurviewMessage {
-  id: string;
-  content: string;
-  contentType: 'file' | 'metadata';
-  timestamp: string;
-  fileInfo?: FileInfo;
-}
-
-export interface FileInfo {
-  path: string;
-  size: number;
-  sha: string;
-  language?: string;
-}
-
-export interface PayloadMetadata {
-  repository: string;
-  branch: string;
-  commit: string;
-  runId: string;
-  timestamp: string;
-  fileCount: number;
-}
-
 export interface ApiResponse<T = any> {
   success: boolean;
   data?: T;
