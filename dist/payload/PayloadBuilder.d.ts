@@ -6,7 +6,8 @@ export declare class PayloadBuilder {
     private static readonly domain;
     private static readonly scopeActivity;
     constructor(config: ActionConfig);
-    build(files: FileMetadata[]): Promise<PurviewPayload>;
+    build(files: FileMetadata[]): Promise<PurviewPayload[]>;
+    private createPayloadObject;
     buildProtectionScopesRequest(): ProtectionScopesRequest;
     buildProcessAndUploadRequests(files: FileMetadata[], scopeResponse: ProtectionScopesResponse, prInfo: PrInfo): SplitPCRequests;
     /**
@@ -21,15 +22,14 @@ export declare class PayloadBuilder {
     /**
      * Build a per-user ProcessContentRequest for inline PC calls.
      */
-    buildPerUserProcessContentRequest(file: FileMetadata, conversationId: string, messageId: number): ProcessContentRequest;
+    buildPerUserProcessContentRequest(file: FileMetadata, conversationId: string, messageId: number): ProcessContentRequest[];
     private matchActivity;
     buildUploadSignalRequest(files: FileMetadata[], prInfo: PrInfo): UploadSignalRequest[];
-    buildProcessContentBatchRequest(files: FileMetadata[]): ProcessContentBatchRequest;
+    buildProcessContentBatchRequest(files: FileMetadata[]): ProcessContentBatchRequest[];
     private createContentToProcess;
     private createMetadataMessage;
     private createFileMessages;
     private chunkContent;
-    private truncatePayload;
     private generateConversationId;
     private generateMessageId;
     private getFileTypes;

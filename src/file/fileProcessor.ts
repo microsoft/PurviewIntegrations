@@ -6,7 +6,7 @@ import * as crypto from 'crypto';
 import { execSync } from 'child_process';
 import isBinaryPath from 'is-binary-path';
 import { minimatch } from 'minimatch';
-import { ActionConfig, FileMetadata, PrInfo, CommitInfo } from '../config/types';
+import { ActionConfig, FileMetadata, PrInfo, CommitInfo, CommitFiles } from '../config/types';
 
 // Type aliases for cleaner code
 type CommitFile = NonNullable<Endpoints['GET /repos/{owner}/{repo}/commits/{ref}']['response']['data']['files']>[number];
@@ -358,12 +358,24 @@ export class FileProcessor {
         continue;
       }
 
+      let fileContent = file.patch || "";
+      let fileSize = file.patch ? file.patch.length : 0;
+
+      // GitHub API omits .patch for large diffs — compute the diff ourselves
+      if (!file.patch && file.status !== 'removed') {
+        const diff = await this.computeDiff(file.filename, file.status || 'modified', commit.parents?.map((p: { sha: string }) => p.sha) || [], commitSha);
+        if (diff !== null) {
+          fileContent = diff;
+          fileSize = diff.length;
+        }
+      }
+
       const metadata = {
         path: file.filename,
-        size: file.patch ? file.patch.length : 0,
+        size: fileSize,
         encoding: 'utf-8',
         sha: file.sha,
-        content: file.patch || "",
+        content: fileContent,
         authorLogin: commit.author?.login || commit.committer?.login || null,
         authorEmail: commit.commit.author?.email || commit.commit.committer?.email || null,
         authorId: userId,
@@ -377,6 +389,238 @@ export class FileProcessor {
     }
 
     return fileMetadata;
+  }
+
+  /**
+   * Computes a unified diff for a file when the commit API omits the patch.
+   * Fetches the file content at both the parent and current commits via the
+   * GitHub Contents API, then produces a unified diff.
+   */
+  private async computeDiff(
+    filePath: string,
+    status: string,
+    parentShas: string[],
+    commitSha: string
+  ): Promise<string | null> {
+    try {
+      this.logger.info(`Patch missing for ${filePath} — computing diff (status: ${status})`);
+
+      const currentContent = await this.fetchFileContent(filePath, commitSha);
+      if (currentContent === null) {
+        return null;
+      }
+
+      let parentContent: string | null = null;
+      if (status !== 'added' && parentShas.length > 0) {
+        parentContent = await this.fetchFileContent(filePath, parentShas[0]!);
+      }
+
+      const oldLines = parentContent ? parentContent.split('\n') : [];
+      const newLines = currentContent.split('\n');
+
+      return this.generateUnifiedDiff(filePath, oldLines, newLines);
+    } catch (error) {
+      this.logger.warn(`Failed to compute diff for ${filePath}`, { error });
+      return null;
+    }
+  }
+
+  /**
+   * Fetches file content from the GitHub API at a specific ref.
+   * Uses the Contents API for small files (≤1MB base64) and falls back to
+   * the raw download URL for larger files.
+   */
+  private async fetchFileContent(filePath: string, ref: string): Promise<string | null> {
+    try {
+      const { data } = await this.octokit.rest.repos.getContent({
+        owner: this.config.repository.owner,
+        repo: this.config.repository.repo,
+        path: filePath,
+        ref,
+      });
+
+      if (Array.isArray(data)) {
+        this.logger.warn(`${filePath} is a directory at ${ref}`);
+        return null;
+      }
+
+      // For files ≤1MB the API returns base64 content inline
+      if ('content' in data && data.content) {
+        return Buffer.from(data.content, 'base64').toString('utf-8');
+      }
+
+      // For larger files, download via the raw URL
+      if ('download_url' in data && data.download_url) {
+        this.logger.info(`File ${filePath} too large for Contents API — downloading raw content`);
+        const response = await fetch(data.download_url);
+        if (!response.ok) {
+          this.logger.warn(`Raw download failed for ${filePath}: ${response.status}`);
+          return null;
+        }
+        return await response.text();
+      }
+
+      this.logger.warn(`${filePath} has no content or download URL at ${ref}`);
+      return null;
+    } catch (error) {
+      this.logger.warn(`Failed to fetch content for ${filePath} at ${ref}`, { error });
+      return null;
+    }
+  }
+
+  /**
+   * Produces a unified diff string from two arrays of lines.
+   * Uses a simple LCS-based approach to generate hunks matching standard
+   * unified diff format (the same format GitHub returns in .patch).
+   */
+  private generateUnifiedDiff(filePath: string, oldLines: string[], newLines: string[]): string {
+    const hunks = this.computeHunks(oldLines, newLines);
+    if (hunks.length === 0) {
+      return '';
+    }
+
+    const parts: string[] = [];
+    parts.push(`--- a/${filePath}`);
+    parts.push(`+++ b/${filePath}`);
+
+    for (const hunk of hunks) {
+      parts.push(hunk);
+    }
+
+    return parts.join('\n');
+  }
+
+  /**
+   * Computes unified-diff hunks from old and new line arrays.
+   * Groups consecutive changes with up to 3 lines of context around each change.
+   */
+  private computeHunks(oldLines: string[], newLines: string[]): string[] {
+    const CONTEXT = 3;
+    // Build an edit script using a simple O(NM) LCS approach
+    const edits = this.buildEditScript(oldLines, newLines);
+
+    // Group edits into hunks with context lines
+    const hunks: string[] = [];
+    let i = 0;
+    while (i < edits.length) {
+      // Skip unchanged lines until we find a change
+      if (edits[i]!.type === 'equal') {
+        i++;
+        continue;
+      }
+
+      // Found a change — start a new hunk with leading context
+      const contextStart = Math.max(0, i - CONTEXT);
+      let hunkEnd = i;
+
+      // Extend hunk to include all nearby changes (within CONTEXT*2 lines of each other)
+      while (hunkEnd < edits.length) {
+        if (edits[hunkEnd]!.type !== 'equal') {
+          hunkEnd++;
+          continue;
+        }
+        // Look ahead to see if there's another change within context range
+        let nextChange = hunkEnd;
+        while (nextChange < edits.length && edits[nextChange]!.type === 'equal') {
+          nextChange++;
+        }
+        if (nextChange < edits.length && nextChange - hunkEnd <= CONTEXT * 2) {
+          hunkEnd = nextChange + 1;
+        } else {
+          break;
+        }
+      }
+
+      // Add trailing context
+      const contextEnd = Math.min(edits.length, hunkEnd + CONTEXT);
+
+      // Calculate line numbers for the hunk header
+      let oldStart = 1, oldCount = 0, newStart = 1, newCount = 0;
+      // Count lines before this hunk
+      for (let j = 0; j < contextStart; j++) {
+        if (edits[j]!.type !== 'insert') oldStart++;
+        if (edits[j]!.type !== 'delete') newStart++;
+      }
+
+      const hunkLines: string[] = [];
+      for (let j = contextStart; j < contextEnd; j++) {
+        const edit = edits[j]!;
+        if (edit.type === 'equal') {
+          hunkLines.push(` ${edit.line}`);
+          oldCount++;
+          newCount++;
+        } else if (edit.type === 'delete') {
+          hunkLines.push(`-${edit.line}`);
+          oldCount++;
+        } else {
+          hunkLines.push(`+${edit.line}`);
+          newCount++;
+        }
+      }
+
+      hunks.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@\n${hunkLines.join('\n')}`);
+
+      i = contextEnd;
+    }
+
+    return hunks;
+  }
+
+  /**
+   * Builds an edit script (sequence of equal/delete/insert operations)
+   * from two arrays of lines using LCS-based diff.
+   * For files exceeding a line count threshold, falls back to a simple
+   * delete-all/insert-all to avoid excessive memory usage.
+   */
+  private buildEditScript(oldLines: string[], newLines: string[]): Array<{ type: 'equal' | 'delete' | 'insert'; line: string }> {
+    const MAX_LINES_FOR_LCS = 10_000;
+    const m = oldLines.length;
+    const n = newLines.length;
+
+    // For very large files, the O(m*n) DP table would use too much memory.
+    // Fall back to a simple delete-old/insert-new diff.
+    if (m > MAX_LINES_FOR_LCS || n > MAX_LINES_FOR_LCS) {
+      const edits: Array<{ type: 'equal' | 'delete' | 'insert'; line: string }> = [];
+      for (const line of oldLines) {
+        edits.push({ type: 'delete', line });
+      }
+      for (const line of newLines) {
+        edits.push({ type: 'insert', line });
+      }
+      return edits;
+    }
+
+    // Build the full LCS DP table for backtracking
+    const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+    for (let i = 1; i <= m; i++) {
+      for (let j = 1; j <= n; j++) {
+        if (oldLines[i - 1] === newLines[j - 1]) {
+          dp[i]![j] = dp[i - 1]![j - 1]! + 1;
+        } else {
+          dp[i]![j] = Math.max(dp[i - 1]![j]!, dp[i]![j - 1]!);
+        }
+      }
+    }
+
+    // Backtrack to produce the edit script
+    const edits: Array<{ type: 'equal' | 'delete' | 'insert'; line: string }> = [];
+    let oi = m, ni = n;
+    while (oi > 0 || ni > 0) {
+      if (oi > 0 && ni > 0 && oldLines[oi - 1] === newLines[ni - 1]) {
+        edits.push({ type: 'equal', line: oldLines[oi - 1]! });
+        oi--;
+        ni--;
+      } else if (ni > 0 && (oi === 0 || dp[oi]![ni - 1]! >= dp[oi - 1]![ni]!)) {
+        edits.push({ type: 'insert', line: newLines[ni - 1]! });
+        ni--;
+      } else {
+        edits.push({ type: 'delete', line: oldLines[oi - 1]! });
+        oi--;
+      }
+    }
+
+    edits.reverse();
+    return edits;
   }
 
   private isCommitEmpty(commitSha: string) {
@@ -399,6 +643,11 @@ export class FileProcessor {
       return commitInfos;
     }
 
+    // For pull_request events, always list all PR commits
+    if (github.context.payload.pull_request) {
+      return this.getAllPRCommits();
+    }
+
     let before = github.context.payload["before"];
     let after = github.context.payload["after"];
 
@@ -419,63 +668,79 @@ export class FileProcessor {
       return commitInfos;
     }
 
-    if (github.context.payload.pull_request){
-      this.logger.info(`Could not do synchronize comparison. Falling back to all commits in PR. action type: ${github.context.payload.action}, before commit: ${before}, after commit: ${after}`);
-      const { data: commits } = await this.octokit.rest.pulls.listCommits({
-        owner: this.config.repository.owner,
-        repo: this.config.repository.repo,
-        pull_number: github.context.payload.pull_request.number
-      });
-
-      const commitInfos: CommitInfo[] = commits.map((commit: PullRequestCommit) => ({
-        sha: commit.sha,
-        email: commit.commit.author?.email || commit.commit.committer?.email || undefined
-      }));
-
-      return commitInfos;
-    }
-
     this.logger.warn('No valid comparison found, returning empty commit list');
     return [];
   }
 
-  async getLatestPushFiles(): Promise<FileMetadata[]> {
-    const commits = await this.getCommits();
-
-    const commitAuthorEmails: Set<string> = new Set();
-    const commitShas: string[] = [];
-
-    for (const commit of commits) {
-      const authorEmail = commit.email;
-
-      if (authorEmail) {
-        commitAuthorEmails.add(authorEmail.toLowerCase());
-      }
-
-      commitShas.push(commit.sha);
+  async getAllPRCommits(): Promise<CommitInfo[]> {
+    const pr = github.context.payload.pull_request;
+    if (!pr) {
+      this.logger.warn('No pull request context available for getAllPRCommits');
+      return [];
     }
 
-    this.logger.info(`Processing the following commits: ${JSON.stringify(commitShas)}`);
-    const allCommitFiles = [];
+    this.logger.info(`Listing all commits in PR #${pr.number}`);
+    const { data: commits } = await this.octokit.rest.pulls.listCommits({
+      owner: this.config.repository.owner,
+      repo: this.config.repository.repo,
+      pull_number: pr.number
+    });
 
-    // Resolve all author emails to user IDs (uses cache + users.json + Graph API)
+    const commitInfos: CommitInfo[] = commits.map((commit: PullRequestCommit) => ({
+      sha: commit.sha,
+      email: commit.commit.author?.email || commit.commit.committer?.email || undefined
+    }));
+
+    this.logger.info(`Found ${commitInfos.length} total commit(s) in PR #${pr.number}`);
+    return commitInfos;
+  }
+
+  async getFilesGroupedByCommit(lastProcessedHeadSha?: string | null): Promise<CommitFiles[]> {
+    const allCommits = await this.getCommits();
+
+    // Find commits to process by skipping everything up to and including lastProcessedHeadSha
+    let commitsToProcess = allCommits;
+    if (lastProcessedHeadSha) {
+      const idx = allCommits.findIndex(c => c.sha === lastProcessedHeadSha);
+      if (idx >= 0) {
+        commitsToProcess = allCommits.slice(idx + 1);
+        this.logger.info(`Found last processed head SHA ${lastProcessedHeadSha} at position ${idx}; skipping ${idx + 1} commit(s), ${commitsToProcess.length} remaining`);
+      } else {
+        this.logger.info(`Last processed head SHA ${lastProcessedHeadSha} not found in commit list; processing all ${allCommits.length} commit(s)`);
+      }
+    }
+
+    if (commitsToProcess.length === 0) {
+      this.logger.info('No new commits to process');
+      return [];
+    }
+
+    // Resolve all author emails to user IDs up front
+    const commitAuthorEmails: Set<string> = new Set();
+    for (const commit of commitsToProcess) {
+      if (commit.email) {
+        commitAuthorEmails.add(commit.email.toLowerCase());
+      }
+    }
     const userIdMap = await this.resolveUserIds(commitAuthorEmails);
 
-    for (const commit of commits) {
+    const result: CommitFiles[] = [];
+    for (const commit of commitsToProcess) {
       this.logger.info(`Processing commit: ${commit.sha}`);
-      const authorUpn = commit.email;
-      let userId = undefined;
-
-      if (authorUpn) {
-        userId = userIdMap[authorUpn.toLowerCase()] || this.config.userId;
-        this.logger.info(`Resolved '${authorUpn}' → ${userId}`);
+      let userId: string | undefined;
+      if (commit.email) {
+        userId = userIdMap[commit.email.toLowerCase()] || this.config.userId;
       }
-
-      const commitFiles = await this.getFilesForCommit(commit.sha, userId);
-      allCommitFiles.push(...commitFiles);
+      const files = await this.getFilesForCommit(commit.sha, userId);
+      result.push({ sha: commit.sha, files });
     }
 
-    return allCommitFiles;
+    return result;
+  }
+
+  async getLatestPushFiles(lastProcessedHeadSha?: string | null): Promise<FileMetadata[]> {
+    const commitGroups = await this.getFilesGroupedByCommit(lastProcessedHeadSha);
+    return commitGroups.flatMap(cg => cg.files);
   }
 
   private async getPullRequestFiles(): Promise<string[]> {

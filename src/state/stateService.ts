@@ -26,6 +26,32 @@ export class StateService {
     return `.purview/state/${safeOwner}-${safeRepo}.json`;
   }
 
+  async readStateFile<T>(stateRepo: StateRepo, path: string): Promise<T | null> {
+    const octokit = github.getOctokit(stateRepo.token);
+
+    try {
+      const { data } = await octokit.rest.repos.getContent({
+        owner: stateRepo.owner,
+        repo: stateRepo.repo,
+        path,
+        ref: stateRepo.branch,
+      });
+
+      if (Array.isArray(data) || !('content' in data) || !data.content) {
+        return null;
+      }
+
+      const content = Buffer.from(data.content, 'base64').toString('utf8');
+      return JSON.parse(content) as T;
+    } catch (e: any) {
+      if (e?.status === 404) {
+        return null;
+      }
+      this.logger.warn(`Failed to read state file at ${path}`, { error: e });
+      return null;
+    }
+  }
+
   async lookupStateFile(stateRepo: StateRepo, path: string): Promise<StateFileLookup> {
     const octokit = github.getOctokit(stateRepo.token);
 

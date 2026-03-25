@@ -38,6 +38,59 @@ describe('StateService', () => {
     });
   });
 
+  describe('readStateFile', () => {
+    it('returns parsed JSON when file exists', async () => {
+      const stateData = { version: 1, processedCommitShas: ['sha1', 'sha2'] };
+      const base64Content = Buffer.from(JSON.stringify(stateData)).toString('base64');
+      const mockGetContent = jest.fn().mockResolvedValue({
+        data: { content: base64Content, type: 'file', sha: 'file-sha' },
+      });
+      (github.getOctokit as jest.Mock).mockReturnValue({
+        rest: { repos: { getContent: mockGetContent } },
+      });
+
+      const service = new StateService();
+      const result = await service.readStateFile(
+        { owner: 'org', repo: 'repo', branch: 'main', token: 'tok' },
+        '.purview/state/commits.json'
+      );
+
+      expect(result).toEqual(stateData);
+    });
+
+    it('returns null when file not found (404)', async () => {
+      const mockGetContent = jest.fn().mockRejectedValue({ status: 404 });
+      (github.getOctokit as jest.Mock).mockReturnValue({
+        rest: { repos: { getContent: mockGetContent } },
+      });
+
+      const service = new StateService();
+      const result = await service.readStateFile(
+        { owner: 'org', repo: 'repo', branch: 'main', token: 'tok' },
+        '.purview/state/missing.json'
+      );
+
+      expect(result).toBeNull();
+    });
+
+    it('returns null when response is a directory', async () => {
+      const mockGetContent = jest.fn().mockResolvedValue({
+        data: [{ name: 'file.json' }],
+      });
+      (github.getOctokit as jest.Mock).mockReturnValue({
+        rest: { repos: { getContent: mockGetContent } },
+      });
+
+      const service = new StateService();
+      const result = await service.readStateFile(
+        { owner: 'org', repo: 'repo', branch: 'main', token: 'tok' },
+        '.purview/state/'
+      );
+
+      expect(result).toBeNull();
+    });
+  });
+
   describe('lookupStateFile', () => {
     it('returns exists=true with sha when file exists', async () => {
       const mockGetContent = jest.fn().mockResolvedValue({

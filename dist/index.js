@@ -58291,7 +58291,10 @@ class logger_Logger {
     debug(message, data) {
         if (this.isDebug) {
             const logMessage = this.formatMessage(logger_LogLevel.DEBUG, message, data);
-            debug(logMessage);
+            // Use core.info so debug output is always visible in the Actions log
+            // when the user has enabled the debug input. core.debug only shows
+            // when the ACTIONS_STEP_DEBUG repo secret is set.
+            info(logMessage);
         }
     }
     info(message, data) {
@@ -62596,12 +62599,22 @@ class FileProcessor {
                 this.logger.info(`Skipping binary file: ${file.filename}`);
                 continue;
             }
+            let fileContent = file.patch || "";
+            let fileSize = file.patch ? file.patch.length : 0;
+            // GitHub API omits .patch for large diffs — compute the diff ourselves
+            if (!file.patch && file.status !== 'removed') {
+                const diff = await this.computeDiff(file.filename, file.status || 'modified', commit.parents?.map((p) => p.sha) || [], commitSha);
+                if (diff !== null) {
+                    fileContent = diff;
+                    fileSize = diff.length;
+                }
+            }
             const metadata = {
                 path: file.filename,
-                size: file.patch ? file.patch.length : 0,
+                size: fileSize,
                 encoding: 'utf-8',
                 sha: file.sha,
-                content: file.patch || "",
+                content: fileContent,
                 authorLogin: commit.author?.login || commit.committer?.login || null,
                 authorEmail: commit.commit.author?.email || commit.commit.committer?.email || null,
                 authorId: userId,
@@ -62614,6 +62627,214 @@ class FileProcessor {
             fileMetadata.push(metadata);
         }
         return fileMetadata;
+    }
+    /**
+     * Computes a unified diff for a file when the commit API omits the patch.
+     * Fetches the file content at both the parent and current commits via the
+     * GitHub Contents API, then produces a unified diff.
+     */
+    async computeDiff(filePath, status, parentShas, commitSha) {
+        try {
+            this.logger.info(`Patch missing for ${filePath} — computing diff (status: ${status})`);
+            const currentContent = await this.fetchFileContent(filePath, commitSha);
+            if (currentContent === null) {
+                return null;
+            }
+            let parentContent = null;
+            if (status !== 'added' && parentShas.length > 0) {
+                parentContent = await this.fetchFileContent(filePath, parentShas[0]);
+            }
+            const oldLines = parentContent ? parentContent.split('\n') : [];
+            const newLines = currentContent.split('\n');
+            return this.generateUnifiedDiff(filePath, oldLines, newLines);
+        }
+        catch (error) {
+            this.logger.warn(`Failed to compute diff for ${filePath}`, { error });
+            return null;
+        }
+    }
+    /**
+     * Fetches file content from the GitHub API at a specific ref.
+     * Uses the Contents API for small files (≤1MB base64) and falls back to
+     * the raw download URL for larger files.
+     */
+    async fetchFileContent(filePath, ref) {
+        try {
+            const { data } = await this.octokit.rest.repos.getContent({
+                owner: this.config.repository.owner,
+                repo: this.config.repository.repo,
+                path: filePath,
+                ref,
+            });
+            if (Array.isArray(data)) {
+                this.logger.warn(`${filePath} is a directory at ${ref}`);
+                return null;
+            }
+            // For files ≤1MB the API returns base64 content inline
+            if ('content' in data && data.content) {
+                return Buffer.from(data.content, 'base64').toString('utf-8');
+            }
+            // For larger files, download via the raw URL
+            if ('download_url' in data && data.download_url) {
+                this.logger.info(`File ${filePath} too large for Contents API — downloading raw content`);
+                const response = await fetch(data.download_url);
+                if (!response.ok) {
+                    this.logger.warn(`Raw download failed for ${filePath}: ${response.status}`);
+                    return null;
+                }
+                return await response.text();
+            }
+            this.logger.warn(`${filePath} has no content or download URL at ${ref}`);
+            return null;
+        }
+        catch (error) {
+            this.logger.warn(`Failed to fetch content for ${filePath} at ${ref}`, { error });
+            return null;
+        }
+    }
+    /**
+     * Produces a unified diff string from two arrays of lines.
+     * Uses a simple LCS-based approach to generate hunks matching standard
+     * unified diff format (the same format GitHub returns in .patch).
+     */
+    generateUnifiedDiff(filePath, oldLines, newLines) {
+        const hunks = this.computeHunks(oldLines, newLines);
+        if (hunks.length === 0) {
+            return '';
+        }
+        const parts = [];
+        parts.push(`--- a/${filePath}`);
+        parts.push(`+++ b/${filePath}`);
+        for (const hunk of hunks) {
+            parts.push(hunk);
+        }
+        return parts.join('\n');
+    }
+    /**
+     * Computes unified-diff hunks from old and new line arrays.
+     * Groups consecutive changes with up to 3 lines of context around each change.
+     */
+    computeHunks(oldLines, newLines) {
+        const CONTEXT = 3;
+        // Build an edit script using a simple O(NM) LCS approach
+        const edits = this.buildEditScript(oldLines, newLines);
+        // Group edits into hunks with context lines
+        const hunks = [];
+        let i = 0;
+        while (i < edits.length) {
+            // Skip unchanged lines until we find a change
+            if (edits[i].type === 'equal') {
+                i++;
+                continue;
+            }
+            // Found a change — start a new hunk with leading context
+            const contextStart = Math.max(0, i - CONTEXT);
+            let hunkEnd = i;
+            // Extend hunk to include all nearby changes (within CONTEXT*2 lines of each other)
+            while (hunkEnd < edits.length) {
+                if (edits[hunkEnd].type !== 'equal') {
+                    hunkEnd++;
+                    continue;
+                }
+                // Look ahead to see if there's another change within context range
+                let nextChange = hunkEnd;
+                while (nextChange < edits.length && edits[nextChange].type === 'equal') {
+                    nextChange++;
+                }
+                if (nextChange < edits.length && nextChange - hunkEnd <= CONTEXT * 2) {
+                    hunkEnd = nextChange + 1;
+                }
+                else {
+                    break;
+                }
+            }
+            // Add trailing context
+            const contextEnd = Math.min(edits.length, hunkEnd + CONTEXT);
+            // Calculate line numbers for the hunk header
+            let oldStart = 1, oldCount = 0, newStart = 1, newCount = 0;
+            // Count lines before this hunk
+            for (let j = 0; j < contextStart; j++) {
+                if (edits[j].type !== 'insert')
+                    oldStart++;
+                if (edits[j].type !== 'delete')
+                    newStart++;
+            }
+            const hunkLines = [];
+            for (let j = contextStart; j < contextEnd; j++) {
+                const edit = edits[j];
+                if (edit.type === 'equal') {
+                    hunkLines.push(` ${edit.line}`);
+                    oldCount++;
+                    newCount++;
+                }
+                else if (edit.type === 'delete') {
+                    hunkLines.push(`-${edit.line}`);
+                    oldCount++;
+                }
+                else {
+                    hunkLines.push(`+${edit.line}`);
+                    newCount++;
+                }
+            }
+            hunks.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@\n${hunkLines.join('\n')}`);
+            i = contextEnd;
+        }
+        return hunks;
+    }
+    /**
+     * Builds an edit script (sequence of equal/delete/insert operations)
+     * from two arrays of lines using LCS-based diff.
+     * For files exceeding a line count threshold, falls back to a simple
+     * delete-all/insert-all to avoid excessive memory usage.
+     */
+    buildEditScript(oldLines, newLines) {
+        const MAX_LINES_FOR_LCS = 10_000;
+        const m = oldLines.length;
+        const n = newLines.length;
+        // For very large files, the O(m*n) DP table would use too much memory.
+        // Fall back to a simple delete-old/insert-new diff.
+        if (m > MAX_LINES_FOR_LCS || n > MAX_LINES_FOR_LCS) {
+            const edits = [];
+            for (const line of oldLines) {
+                edits.push({ type: 'delete', line });
+            }
+            for (const line of newLines) {
+                edits.push({ type: 'insert', line });
+            }
+            return edits;
+        }
+        // Build the full LCS DP table for backtracking
+        const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+        for (let i = 1; i <= m; i++) {
+            for (let j = 1; j <= n; j++) {
+                if (oldLines[i - 1] === newLines[j - 1]) {
+                    dp[i][j] = dp[i - 1][j - 1] + 1;
+                }
+                else {
+                    dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+                }
+            }
+        }
+        // Backtrack to produce the edit script
+        const edits = [];
+        let oi = m, ni = n;
+        while (oi > 0 || ni > 0) {
+            if (oi > 0 && ni > 0 && oldLines[oi - 1] === newLines[ni - 1]) {
+                edits.push({ type: 'equal', line: oldLines[oi - 1] });
+                oi--;
+                ni--;
+            }
+            else if (ni > 0 && (oi === 0 || dp[oi][ni - 1] >= dp[oi - 1][ni])) {
+                edits.push({ type: 'insert', line: newLines[ni - 1] });
+                ni--;
+            }
+            else {
+                edits.push({ type: 'delete', line: oldLines[oi - 1] });
+                oi--;
+            }
+        }
+        edits.reverse();
+        return edits;
     }
     isCommitEmpty(commitSha) {
         if (commitSha && commitSha !== this.emptySha) {
@@ -62632,6 +62853,10 @@ class FileProcessor {
             }));
             return commitInfos;
         }
+        // For pull_request events, always list all PR commits
+        if (github_context.payload.pull_request) {
+            return this.getAllPRCommits();
+        }
         let before = github_context.payload["before"];
         let after = github_context.payload["after"];
         if (!this.isCommitEmpty(before) && !this.isCommitEmpty(after)) {
@@ -62648,49 +62873,69 @@ class FileProcessor {
             }));
             return commitInfos;
         }
-        if (github_context.payload.pull_request) {
-            this.logger.info(`Could not do synchronize comparison. Falling back to all commits in PR. action type: ${github_context.payload.action}, before commit: ${before}, after commit: ${after}`);
-            const { data: commits } = await this.octokit.rest.pulls.listCommits({
-                owner: this.config.repository.owner,
-                repo: this.config.repository.repo,
-                pull_number: github_context.payload.pull_request.number
-            });
-            const commitInfos = commits.map((commit) => ({
-                sha: commit.sha,
-                email: commit.commit.author?.email || commit.commit.committer?.email || undefined
-            }));
-            return commitInfos;
-        }
         this.logger.warn('No valid comparison found, returning empty commit list');
         return [];
     }
-    async getLatestPushFiles() {
-        const commits = await this.getCommits();
+    async getAllPRCommits() {
+        const pr = github_context.payload.pull_request;
+        if (!pr) {
+            this.logger.warn('No pull request context available for getAllPRCommits');
+            return [];
+        }
+        this.logger.info(`Listing all commits in PR #${pr.number}`);
+        const { data: commits } = await this.octokit.rest.pulls.listCommits({
+            owner: this.config.repository.owner,
+            repo: this.config.repository.repo,
+            pull_number: pr.number
+        });
+        const commitInfos = commits.map((commit) => ({
+            sha: commit.sha,
+            email: commit.commit.author?.email || commit.commit.committer?.email || undefined
+        }));
+        this.logger.info(`Found ${commitInfos.length} total commit(s) in PR #${pr.number}`);
+        return commitInfos;
+    }
+    async getFilesGroupedByCommit(lastProcessedHeadSha) {
+        const allCommits = await this.getCommits();
+        // Find commits to process by skipping everything up to and including lastProcessedHeadSha
+        let commitsToProcess = allCommits;
+        if (lastProcessedHeadSha) {
+            const idx = allCommits.findIndex(c => c.sha === lastProcessedHeadSha);
+            if (idx >= 0) {
+                commitsToProcess = allCommits.slice(idx + 1);
+                this.logger.info(`Found last processed head SHA ${lastProcessedHeadSha} at position ${idx}; skipping ${idx + 1} commit(s), ${commitsToProcess.length} remaining`);
+            }
+            else {
+                this.logger.info(`Last processed head SHA ${lastProcessedHeadSha} not found in commit list; processing all ${allCommits.length} commit(s)`);
+            }
+        }
+        if (commitsToProcess.length === 0) {
+            this.logger.info('No new commits to process');
+            return [];
+        }
+        // Resolve all author emails to user IDs up front
         const commitAuthorEmails = new Set();
-        const commitShas = [];
-        for (const commit of commits) {
-            const authorEmail = commit.email;
-            if (authorEmail) {
-                commitAuthorEmails.add(authorEmail.toLowerCase());
+        for (const commit of commitsToProcess) {
+            if (commit.email) {
+                commitAuthorEmails.add(commit.email.toLowerCase());
             }
-            commitShas.push(commit.sha);
         }
-        this.logger.info(`Processing the following commits: ${JSON.stringify(commitShas)}`);
-        const allCommitFiles = [];
-        // Resolve all author emails to user IDs (uses cache + users.json + Graph API)
         const userIdMap = await this.resolveUserIds(commitAuthorEmails);
-        for (const commit of commits) {
+        const result = [];
+        for (const commit of commitsToProcess) {
             this.logger.info(`Processing commit: ${commit.sha}`);
-            const authorUpn = commit.email;
-            let userId = undefined;
-            if (authorUpn) {
-                userId = userIdMap[authorUpn.toLowerCase()] || this.config.userId;
-                this.logger.info(`Resolved '${authorUpn}' → ${userId}`);
+            let userId;
+            if (commit.email) {
+                userId = userIdMap[commit.email.toLowerCase()] || this.config.userId;
             }
-            const commitFiles = await this.getFilesForCommit(commit.sha, userId);
-            allCommitFiles.push(...commitFiles);
+            const files = await this.getFilesForCommit(commit.sha, userId);
+            result.push({ sha: commit.sha, files });
         }
-        return allCommitFiles;
+        return result;
+    }
+    async getLatestPushFiles(lastProcessedHeadSha) {
+        const commitGroups = await this.getFilesGroupedByCommit(lastProcessedHeadSha);
+        return commitGroups.flatMap(cg => cg.files);
     }
     async getPullRequestFiles() {
         const pr = github_context.payload.pull_request;
@@ -62728,7 +62973,7 @@ class FileProcessor {
 class PayloadBuilder {
     config;
     logger;
-    maxPayloadSize = 1024 * 1024 * 5; // 5MB
+    maxPayloadSize = 1024 * 1024 * 3; // 3MB
     static domain = "github.com";
     static scopeActivity = "uploadText";
     constructor(config) {
@@ -62737,15 +62982,41 @@ class PayloadBuilder {
     }
     async build(files) {
         const conversationId = this.generateConversationId();
-        const messages = [];
+        const allMessages = [];
         // Add metadata message
-        messages.push(this.createMetadataMessage(files));
+        allMessages.push(this.createMetadataMessage(files));
         // Add file messages
         for (const file of files) {
             const fileMessages = await this.createFileMessages(file);
-            messages.push(...fileMessages);
+            allMessages.push(...fileMessages);
         }
-        const payload = {
+        // Split messages into payloads of <= maxPayloadSize
+        const payloads = [];
+        let currentMessages = [];
+        let currentSize = 0;
+        const baseOverhead = 300; // JSON overhead for metadata, conversationId, etc.
+        for (const msg of allMessages) {
+            const msgSize = JSON.stringify(msg).length;
+            if (currentMessages.length > 0 && currentSize + msgSize + baseOverhead > this.maxPayloadSize) {
+                payloads.push(this.createPayloadObject(conversationId, currentMessages, files.length));
+                currentMessages = [];
+                currentSize = 0;
+            }
+            currentMessages.push(msg);
+            currentSize += msgSize;
+        }
+        if (currentMessages.length > 0) {
+            payloads.push(this.createPayloadObject(conversationId, currentMessages, files.length));
+        }
+        this.logger.debug('Payload built', {
+            conversationId,
+            payloadCount: payloads.length,
+            totalMessages: allMessages.length
+        });
+        return payloads;
+    }
+    createPayloadObject(conversationId, messages, fileCount) {
+        return {
             conversationId,
             messages,
             metadata: {
@@ -62754,21 +63025,9 @@ class PayloadBuilder {
                 commit: this.config.repository.sha,
                 runId: this.config.repository.runId,
                 timestamp: new Date().toISOString(),
-                fileCount: files.length
+                fileCount
             }
         };
-        // Validate payload size
-        const payloadSize = JSON.stringify(payload).length;
-        if (payloadSize > this.maxPayloadSize) {
-            this.logger.warn('Payload too large, truncating content', { size: payloadSize });
-            return this.truncatePayload(payload);
-        }
-        this.logger.debug('Payload built', {
-            conversationId,
-            messageCount: messages.length,
-            size: payloadSize
-        });
-        return payload;
     }
     buildProtectionScopesRequest() {
         const request = {
@@ -62861,10 +63120,10 @@ class PayloadBuilder {
         }
         this.logger.info(`Files to process: ${filesToProcess.length}, Files to upload: ${filesToUpload.length}`);
         const uploadSignalRequests = filesToUpload.length > 0 ? this.buildUploadSignalRequest(filesToUpload, prInfo) : [];
-        const pcbRequest = filesToProcess.length > 0 ? this.buildProcessContentBatchRequest(filesToProcess) : undefined;
+        const pcbRequests = filesToProcess.length > 0 ? this.buildProcessContentBatchRequest(filesToProcess) : [];
         return {
             uploadSignalRequests: uploadSignalRequests,
-            processContentRequest: pcbRequest
+            processContentRequests: pcbRequests
         };
     }
     /**
@@ -62921,8 +63180,25 @@ class PayloadBuilder {
      * Build a per-user ProcessContentRequest for inline PC calls.
      */
     buildPerUserProcessContentRequest(file, conversationId, messageId) {
-        const contentToProcess = this.createContentToProcess(file, conversationId, messageId);
-        return { contentToProcess };
+        const content = file.content || `File: ${file.path} (${file.size} bytes)`;
+        const singleCTP = this.createContentToProcess(file, conversationId, messageId);
+        const singleRequest = { contentToProcess: singleCTP };
+        const requestSize = JSON.stringify(singleRequest).length;
+        if (requestSize <= this.maxPayloadSize) {
+            return [singleRequest];
+        }
+        // Split content into chunks that fit within maxPayloadSize
+        const overhead = requestSize - content.length;
+        const maxContentPerChunk = this.maxPayloadSize - overhead - 100; // safety margin
+        const requests = [];
+        for (let i = 0; i < content.length; i += maxContentPerChunk) {
+            const chunk = content.substring(i, Math.min(i + maxContentPerChunk, content.length));
+            const isLastChunk = i + maxContentPerChunk >= content.length;
+            const chunkCTP = this.createContentToProcess(file, conversationId, messageId + requests.length, !isLastChunk, chunk);
+            requests.push({ contentToProcess: chunkCTP });
+        }
+        this.logger.info(`Split file ${file.path} into ${requests.length} processContent request(s)`);
+        return requests;
     }
     matchActivity(scopeActivities, requestActivity) {
         // Map Activity enum to the string used in protection scope responses
@@ -62939,37 +63215,104 @@ class PayloadBuilder {
         return scopeStr.includes(expected);
     }
     buildUploadSignalRequest(files, prInfo) {
-        let requests = [];
-        let conversationId = crypto.randomUUID();
-        files.forEach((file, index) => {
+        const requests = [];
+        const conversationId = crypto.randomUUID();
+        let seqNum = 0;
+        for (const file of files) {
             this.logger.info(`Building upload signal request for file: ${file.path}`);
-            const contentToProcess = this.createContentToProcess(file, conversationId, index);
+            const content = file.content || `File: ${file.path} (${file.size} bytes)`;
             const userId = file.authorId || this.config.userId;
-            const signalRequest = {
-                id: crypto.randomUUID(),
-                userId: userId,
-                userEmail: file.authorEmail || prInfo.authorEmail,
-                scopeIdentifier: "",
-                contentMetadata: contentToProcess,
-            };
-            requests.push(signalRequest);
-        });
+            const userEmail = file.authorEmail || prInfo.authorEmail;
+            const singleCTP = this.createContentToProcess(file, conversationId, seqNum);
+            const singleSize = JSON.stringify(singleCTP).length + 200; // account for wrapper fields
+            if (singleSize <= this.maxPayloadSize) {
+                requests.push({
+                    id: crypto.randomUUID(),
+                    userId,
+                    userEmail,
+                    scopeIdentifier: "",
+                    contentMetadata: singleCTP,
+                });
+                seqNum++;
+            }
+            else {
+                // Split content into chunks
+                const overhead = singleSize - content.length;
+                const maxContentPerChunk = this.maxPayloadSize - overhead - 100;
+                for (let i = 0; i < content.length; i += maxContentPerChunk) {
+                    const chunk = content.substring(i, Math.min(i + maxContentPerChunk, content.length));
+                    const isLastChunk = i + maxContentPerChunk >= content.length;
+                    const chunkCTP = this.createContentToProcess(file, conversationId, seqNum, !isLastChunk, chunk);
+                    requests.push({
+                        id: crypto.randomUUID(),
+                        userId,
+                        userEmail,
+                        scopeIdentifier: "",
+                        contentMetadata: chunkCTP,
+                    });
+                    seqNum++;
+                }
+                this.logger.info(`Split file ${file.path} into multiple upload signal request(s)`);
+            }
+        }
         return requests;
     }
     buildProcessContentBatchRequest(files) {
-        const items = [];
+        const allItems = [];
         const conversationId = crypto.randomUUID();
-        files.forEach((file, index) => {
-            const contentToProcess = this.createContentToProcess(file, conversationId, index);
-            items.push({
-                contentToProcess: contentToProcess,
-                userId: file.authorId || this.config.userId,
+        let seqNum = 0;
+        for (const file of files) {
+            const content = file.content || `File: ${file.path} (${file.size} bytes)`;
+            const userId = file.authorId || this.config.userId;
+            const singleCTP = this.createContentToProcess(file, conversationId, seqNum);
+            const singleItem = {
+                contentToProcess: singleCTP,
+                userId,
                 requestId: crypto.randomUUID(),
-            });
-        });
-        return { processContentRequests: items };
+            };
+            const itemSize = JSON.stringify(singleItem).length;
+            if (itemSize <= this.maxPayloadSize) {
+                allItems.push(singleItem);
+                seqNum++;
+            }
+            else {
+                // Single file exceeds limit — split its content into chunks
+                const overhead = itemSize - content.length;
+                const maxContentPerChunk = this.maxPayloadSize - overhead - 100;
+                for (let i = 0; i < content.length; i += maxContentPerChunk) {
+                    const chunk = content.substring(i, Math.min(i + maxContentPerChunk, content.length));
+                    const isLastChunk = i + maxContentPerChunk >= content.length;
+                    const chunkCTP = this.createContentToProcess(file, conversationId, seqNum, !isLastChunk, chunk);
+                    allItems.push({
+                        contentToProcess: chunkCTP,
+                        userId,
+                        requestId: crypto.randomUUID(),
+                    });
+                    seqNum++;
+                }
+            }
+        }
+        // Split items into batches that fit within maxPayloadSize
+        const batches = [];
+        let currentItems = [];
+        let currentSize = 0;
+        const batchOverhead = 50;
+        for (const item of allItems) {
+            const itemSize = JSON.stringify(item).length;
+            if (currentItems.length > 0 && currentSize + itemSize + batchOverhead > this.maxPayloadSize) {
+                batches.push({ processContentRequests: currentItems });
+                currentItems = [];
+                currentSize = 0;
+            }
+            currentItems.push(item);
+            currentSize += itemSize;
+        }
+        if (currentItems.length > 0) {
+            batches.push({ processContentRequests: currentItems });
+        }
+        return batches;
     }
-    createContentToProcess(file, conversationId, messageId) {
+    createContentToProcess(file, conversationId, messageId, isTruncated = false, contentOverride) {
         let userId = file.authorId;
         if (!userId) {
             this.logger.warn(`No user ID found for file: ${file.path} with author ${file.authorEmail}}, using default user ID`);
@@ -62978,7 +63321,7 @@ class PayloadBuilder {
         const now = new Date().toISOString();
         let fileContent = {
             "@odata.type": "microsoft.graph.textContent",
-            data: file.content || `File: ${file.path} (${file.size} bytes)`
+            data: contentOverride ?? file.content ?? `File: ${file.path} (${file.size} bytes)`
         };
         return {
             contentEntries: [
@@ -62989,7 +63332,7 @@ class PayloadBuilder {
                     correlationId: conversationId,
                     sequenceNumber: messageId,
                     length: file.size,
-                    isTruncated: false,
+                    isTruncated,
                     createdDateTime: now,
                     modifiedDateTime: now,
                     content: fileContent
@@ -63070,20 +63413,6 @@ class PayloadBuilder {
             chunks.push(content.substring(i, i + chunkSize));
         }
         return chunks;
-    }
-    truncatePayload(payload) {
-        // Remove content from file messages to reduce size
-        const truncated = { ...payload };
-        truncated.messages = truncated.messages.map(msg => {
-            if (msg.contentType === 'file' && msg.content.length > 1000) {
-                return {
-                    ...msg,
-                    content: msg.content.substring(0, 1000) + '... [truncated]'
-                };
-            }
-            return msg;
-        });
-        return truncated;
     }
     generateConversationId() {
         const timestamp = Date.now();
@@ -63230,6 +63559,29 @@ class StateService {
         const safeRepo = targetRepo.replace(/[^a-zA-Z0-9_.-]/g, '_');
         return `.purview/state/${safeOwner}-${safeRepo}.json`;
     }
+    async readStateFile(stateRepo, path) {
+        const octokit = getOctokit(stateRepo.token);
+        try {
+            const { data } = await octokit.rest.repos.getContent({
+                owner: stateRepo.owner,
+                repo: stateRepo.repo,
+                path,
+                ref: stateRepo.branch,
+            });
+            if (Array.isArray(data) || !('content' in data) || !data.content) {
+                return null;
+            }
+            const content = Buffer.from(data.content, 'base64').toString('utf8');
+            return JSON.parse(content);
+        }
+        catch (e) {
+            if (e?.status === 404) {
+                return null;
+            }
+            this.logger.warn(`Failed to read state file at ${path}`, { error: e });
+            return null;
+        }
+    }
     async lookupStateFile(stateRepo, path) {
         const octokit = getOctokit(stateRepo.token);
         try {
@@ -63367,7 +63719,7 @@ class FullScanService {
     /**
      * Performs a full repository scan when it's the first run
      */
-    async performFullScan(stateInfo, failedPayloads, prInfo, userPsDeniedCache) {
+    async performFullScan(stateInfo, failedPayloads, prInfo, userPsDeniedCache, userPsCache) {
         this.logger.info(stateInfo
             ? 'First run detected; scanning full repository.'
             : 'State tracking disabled; scanning full repository.');
@@ -63395,7 +63747,7 @@ class FullScanService {
         else {
             // Tenant PS has scopes → group files by user and call per-user PS + PCA
             this.logger.info(`Tenant PS returned ${tenantPsResponse.data.value.length} scope(s). Grouping files by user for per-user PS + PCA.`);
-            await this.processFilesByUser(allFiles, prInfo, failedPayloads, psRequest, userPsDeniedCache);
+            await this.processFilesByUser(allFiles, prInfo, failedPayloads, psRequest, userPsDeniedCache, userPsCache);
         }
         // Write state marker
         if (stateInfo) {
@@ -63479,10 +63831,11 @@ class FullScanService {
             const workflowRef = process.env['GITHUB_WORKFLOW_REF'] || '';
             if (workflowRef) {
                 // GITHUB_WORKFLOW_REF format: "octo-org/hello-world/.github/workflows/my-workflow.yml@refs/heads/main"
-                const refMatch = workflowRef.match(/\.github\/workflows\/[^@]+/);
-                if (refMatch) {
-                    workflowId = refMatch[0];
-                    this.logger.info(`Extracted workflow file path from GITHUB_WORKFLOW_REF: ${workflowId}`);
+                // Extract just the filename — octokit URL-encodes slashes in the full path, causing 404
+                const refMatch = workflowRef.match(/\.github\/workflows\/([^@]+)/);
+                if (refMatch && refMatch[1]) {
+                    workflowId = refMatch[1];
+                    this.logger.info(`Extracted workflow filename from GITHUB_WORKFLOW_REF: ${workflowId}`);
                 }
             }
             // Fallback to github.context.workflow if available
@@ -63494,27 +63847,57 @@ class FullScanService {
                 this.logger.warn('Could not determine workflow file path from GITHUB_WORKFLOW_REF or github.context, defaulting to non-first run');
                 return false;
             }
-            const { data: workflowRuns } = await octokit.rest.actions.listWorkflowRuns({
+            // Resolve the numeric workflow ID from the current run
+            const runId = parseInt(github_context.runId.toString(), 10);
+            let numericWorkflowId = null;
+            if (runId) {
+                try {
+                    const { data: run } = await octokit.rest.actions.getWorkflowRun({
+                        owner: targetOwner,
+                        repo: targetRepo,
+                        run_id: runId,
+                    });
+                    numericWorkflowId = run.workflow_id;
+                    this.logger.info(`Resolved workflow ID ${numericWorkflowId} from current run ${runId}`);
+                }
+                catch (err) {
+                    this.logger.warn('Failed to resolve workflow ID from current run', { error: err });
+                }
+            }
+            if (numericWorkflowId === null) {
+                this.logger.info('Could not resolve workflow ID — defaulting to first run');
+                return true;
+            }
+            // Use listWorkflowRunsForRepo (not listWorkflowRuns) because in
+            // cross-repo reusable-workflow setups the numeric workflow_id belongs
+            // to the external workflow-definition repo, causing 404 on the
+            // per-workflow endpoint.
+            const { data: allRuns } = await octokit.rest.actions.listWorkflowRunsForRepo({
                 owner: targetOwner,
                 repo: targetRepo,
-                workflow_id: workflowId,
-                status: 'completed',
-                conclusion: 'success',
-                per_page: 1,
+                status: 'success',
+                per_page: 20,
             });
-            // If there are no completed runs, this is the first run
-            const firstRun = workflowRuns.total_count === 0;
+            const matchingCount = allRuns.workflow_runs.filter((r) => r.workflow_id === numericWorkflowId).length;
+            // If there are no completed runs for our workflow, this is the first run
+            const firstRun = matchingCount === 0;
             this.logger.info(firstRun
                 ? 'First workflow run detected based on workflow history'
-                : `Previous workflow runs found (${workflowRuns.total_count} completed runs), not first run`);
+                : `Previous workflow runs found (${matchingCount} successful run(s) in first page), not first run`);
             return firstRun;
         }
         catch (error) {
-            this.logger.warn('Failed to check workflow history, defaulting to non-first run', { error });
+            if (error?.status === 404) {
+                this.logger.warn('Workflow history returned 404. Ensure the workflow has "actions: read" permission ' +
+                    '(add `permissions: { actions: read }` to your workflow YAML). Defaulting to non-first run.');
+            }
+            else {
+                this.logger.warn('Failed to check workflow history, defaulting to non-first run', { error });
+            }
             return false;
         }
     }
-    async processFilesByUser(allFiles, prInfo, failedPayloads, psRequest, userPsDeniedCache) {
+    async processFilesByUser(allFiles, prInfo, failedPayloads, psRequest, userPsDeniedCache, userPsCache) {
         const filesByUser = new Map();
         for (const file of allFiles) {
             const userId = file.authorId || this.config.userId;
@@ -63524,8 +63907,17 @@ class FullScanService {
         }
         for (const [userId, userFiles] of filesByUser) {
             this.logger.info(`Full scan: processing ${userFiles.length} file(s) for user ${userId}`);
-            // Call per-user protection scopes
-            const userPsResponse = await this.purviewClient.searchUserProtectionScope(userId, psRequest);
+            // Call per-user protection scopes (check cache first)
+            let userPsResponse = userPsCache.get(userId);
+            if (userPsResponse) {
+                this.logger.info(`Full scan: using cached PS response for user ${userId}`);
+            }
+            else {
+                userPsResponse = await this.purviewClient.searchUserProtectionScope(userId, psRequest);
+                if (userPsResponse.success) {
+                    userPsCache.set(userId, userPsResponse);
+                }
+            }
             if (!userPsResponse.success) {
                 this.logger.error(`User PS failed for ${userId}: ${userPsResponse.error}. Falling back to contentActivities.`);
                 failedPayloads.push(`ps-fullscan-${userId}`);
@@ -63543,16 +63935,19 @@ class FullScanService {
                 continue;
             }
             // User has scopes → send PCA batch
-            const pcaBatchRequest = this.payloadBuilder.buildProcessContentBatchRequest(userFiles);
+            const pcaBatchRequests = this.payloadBuilder.buildProcessContentBatchRequest(userFiles);
             this.logger.info(`Full scan: sending ${userFiles.length} file(s) to PCA batch for user ${userId}`);
-            const pcaResult = await this.purviewClient.processContentAsync(pcaBatchRequest);
-            if (!pcaResult.success) {
-                this.logger.error(`PCA batch failed for user ${userId}: ${pcaResult.error}. Falling back to contentActivities.`);
-                failedPayloads.push(`pca-fullscan-${userId}`);
-                await this.sendContentActivities(userFiles, prInfo, failedPayloads);
-            }
-            else {
-                this.logger.info(`Full scan PCA batch completed for user ${userId}`);
+            for (const pcaBatchRequest of pcaBatchRequests) {
+                const pcaResult = await this.purviewClient.processContentAsync(pcaBatchRequest);
+                if (!pcaResult.success) {
+                    this.logger.error(`PCA batch failed for user ${userId}: ${pcaResult.error}. Falling back to contentActivities.`);
+                    failedPayloads.push(`pca-fullscan-${userId}`);
+                    await this.sendContentActivities(userFiles, prInfo, failedPayloads);
+                    break;
+                }
+                else {
+                    this.logger.info(`Full scan PCA batch completed for user ${userId}`);
+                }
             }
         }
     }
@@ -63634,6 +64029,8 @@ class GitHubActionsRunner {
             const blockedFiles = [];
             // Cache of userIds that returned 401 on User PS — skip them on subsequent calls
             const userPsDeniedCache = new Set();
+            // Cache of successful User PS responses — avoids redundant API calls for the same user across commits
+            const userPsCache = new Map();
             // ─── Full Scan Path (first run or manual workflow dispatch) ───
             let fullScanFileCount = 0;
             const isManualDispatch = github_context.eventName === 'workflow_dispatch';
@@ -63642,120 +64039,150 @@ class GitHubActionsRunner {
                 if (isManualDispatch && !firstRun) {
                     this.logger.info('Performing full scan (manually triggered via workflow_dispatch)');
                 }
-                fullScanFileCount = await this.fullScanService.performFullScan(stateInfo, failedPayloads, prInfo, userPsDeniedCache);
+                fullScanFileCount = await this.fullScanService.performFullScan(stateInfo, failedPayloads, prInfo, userPsDeniedCache, userPsCache);
             }
             // ─── PR Diff Path (skip if manually triggered) ───
-            let diffFiles = [];
+            let diffFileCount = 0;
             if (!isManualDispatch) {
-                // Step 4: Process PR diff files
+                // Step 4: Process commits
                 this.logger.info('Running PR diff flow');
-                diffFiles = await this.fileProcessor.getLatestPushFiles();
-                if (diffFiles.length === 0) {
-                    this.logger.warn('No changed files found for PR diff');
+                // Get the commit list, then find the last processed position via workflow run history
+                const allCommits = await this.fileProcessor.getCommits();
+                const commitShaSet = new Set(allCommits.map(c => c.sha));
+                const lastProcessedSha = await this.findLastProcessedCommitSha(commitShaSet);
+                // Get files grouped by commit, skipping already-processed commits
+                const commitGroups = await this.fileProcessor.getFilesGroupedByCommit(lastProcessedSha);
+                if (commitGroups.length === 0) {
+                    this.logger.warn('No new commits to process for PR diff');
                 }
                 else {
-                    // Group files by userId
-                    const filesByUser = new Map();
-                    for (const file of diffFiles) {
-                        const userId = file.authorId || this.config.userId;
-                        const existing = filesByUser.get(userId) || [];
-                        existing.push(file);
-                        filesByUser.set(userId, existing);
-                    }
-                    this.logger.info(`PR diff: ${diffFiles.length} file(s) across ${filesByUser.size} user(s)`);
-                    const psRequest = this.payloadBuilder.buildProtectionScopesRequest();
-                    const requestLocation = psRequest.locations?.[0];
-                    // Process each user's files
-                    for (const [userId, userFiles] of filesByUser) {
-                        this.logger.info(`Processing ${userFiles.length} file(s) for user ${userId}`);
-                        // Check User PS denial cache (401 from earlier call)
-                        if (userPsDeniedCache.has(userId)) {
-                            this.logger.warn(`Skipping user ${userId} — cached 401 from earlier PS call. Routing to contentActivities.`);
-                            await this.sendContentActivities(userFiles, prInfo, failedPayloads);
+                    for (const commitGroup of commitGroups) {
+                        const { sha, files } = commitGroup;
+                        this.logger.info(`── Processing commit ${sha} with ${files.length} file(s) ──`);
+                        if (files.length === 0) {
+                            this.logger.info(`Commit ${sha} has no matching files, skipping`);
                             continue;
                         }
-                        // Call per-user protection scopes
-                        const psApiResponse = await this.purviewClient.searchUserProtectionScope(userId, psRequest);
-                        if (!psApiResponse.success) {
-                            this.logger.error(`Failed to get protection scopes for user ${userId}: ${psApiResponse.error}`);
-                            failedPayloads.push(`ps-${userId}`);
-                            // Cache 401s so we don't retry this user
-                            if (psApiResponse.statusCode === 401) {
-                                userPsDeniedCache.add(userId);
-                                this.logger.warn(`User ${userId} returned 401 on PS — cached, will skip in future calls.`);
+                        diffFileCount += files.length;
+                        // Group files by userId
+                        const filesByUser = new Map();
+                        for (const file of files) {
+                            const userId = file.authorId || this.config.userId;
+                            const existing = filesByUser.get(userId) || [];
+                            existing.push(file);
+                            filesByUser.set(userId, existing);
+                        }
+                        this.logger.info(`Commit ${sha}: ${files.length} file(s) across ${filesByUser.size} user(s)`);
+                        const psRequest = this.payloadBuilder.buildProtectionScopesRequest();
+                        const requestLocation = psRequest.locations?.[0];
+                        // Process each user's files
+                        for (const [userId, userFiles] of filesByUser) {
+                            this.logger.info(`Processing ${userFiles.length} file(s) for user ${userId}`);
+                            // Check User PS denial cache (401 from earlier call)
+                            if (userPsDeniedCache.has(userId)) {
+                                this.logger.warn(`Skipping user ${userId} — cached 401 from earlier PS call. Routing to contentActivities.`);
+                                await this.sendContentActivities(userFiles, prInfo, failedPayloads);
+                                continue;
                             }
-                            await this.sendContentActivities(userFiles, prInfo, failedPayloads);
-                            continue;
-                        }
-                        const psResponse = psApiResponse.data;
-                        const scopeIdentifier = psApiResponse.etag || '';
-                        if (!psResponse || !psResponse.value) {
-                            this.logger.warn(`Empty protection scopes response for user ${userId}, routing all files to contentActivities`);
-                            await this.sendContentActivities(userFiles, prInfo, failedPayloads);
-                            continue;
-                        }
-                        // Check applicable scopes
-                        const scopeCheck = this.payloadBuilder.checkApplicableScopes(psResponse.value, Activity.uploadText, requestLocation);
-                        if (!scopeCheck.shouldProcess) {
-                            // No matching scopes → contentActivities (fire-and-forget)
-                            this.logger.info(`No matching scopes for user ${userId}, routing ${userFiles.length} file(s) to contentActivities`);
-                            await this.sendContentActivities(userFiles, prInfo, failedPayloads);
-                            continue;
-                        }
-                        // Matching scopes found — route based on execution mode
-                        if (scopeCheck.executionMode === ExecutionMode.evaluateInline) {
-                            // evaluateInline → per-user PC, synchronous, parse for blocks
-                            this.logger.info(`evaluateInline: calling processContent for ${userFiles.length} file(s), user ${userId}`);
-                            const conversationId = crypto.randomUUID();
-                            for (let i = 0; i < userFiles.length; i++) {
-                                const file = userFiles[i];
-                                const pcRequest = this.payloadBuilder.buildPerUserProcessContentRequest(file, conversationId, i);
-                                let pcResponse = await this.purviewClient.processContent(userId, pcRequest, scopeIdentifier, true);
-                                if (!pcResponse.success) {
-                                    this.logger.error(`PC failed for file ${file.path}: ${pcResponse.error}. Falling back to contentActivities.`);
-                                    failedPayloads.push(`pc-${file.path}`);
-                                    await this.sendContentActivities([file], prInfo, failedPayloads);
-                                    continue;
+                            // Call per-user protection scopes (check cache first)
+                            let psApiResponse = userPsCache.get(userId);
+                            if (psApiResponse) {
+                                this.logger.info(`Using cached PS response for user ${userId}`);
+                            }
+                            else {
+                                psApiResponse = await this.purviewClient.searchUserProtectionScope(userId, psRequest);
+                                if (psApiResponse.success) {
+                                    userPsCache.set(userId, psApiResponse);
                                 }
-                                const pcData = pcResponse.data;
-                                // Handle protectionScopeState: "modified" → re-fetch scopes and retry
-                                if (pcData?.protectionScopeState === 'modified') {
-                                    this.logger.info(`Protection scope state modified for user ${userId}, re-fetching scopes and retrying PC for ${file.path}`);
-                                    const freshPsResponse = await this.purviewClient.searchUserProtectionScope(userId, psRequest);
-                                    if (freshPsResponse.success && freshPsResponse.data) {
-                                        const freshScopeId = freshPsResponse.etag || '';
-                                        pcResponse = await this.purviewClient.processContent(userId, pcRequest, freshScopeId, true);
+                            }
+                            if (!psApiResponse.success) {
+                                this.logger.error(`Failed to get protection scopes for user ${userId}: ${psApiResponse.error}`);
+                                failedPayloads.push(`ps-${userId}`);
+                                // Cache 401s so we don't retry this user
+                                if (psApiResponse.statusCode === 401) {
+                                    userPsDeniedCache.add(userId);
+                                    this.logger.warn(`User ${userId} returned 401 on PS — cached, will skip in future calls.`);
+                                }
+                                await this.sendContentActivities(userFiles, prInfo, failedPayloads);
+                                continue;
+                            }
+                            const psResponse = psApiResponse.data;
+                            const scopeIdentifier = psApiResponse.etag || '';
+                            if (!psResponse || !psResponse.value) {
+                                this.logger.warn(`Empty protection scopes response for user ${userId}, routing all files to contentActivities`);
+                                await this.sendContentActivities(userFiles, prInfo, failedPayloads);
+                                continue;
+                            }
+                            // Check applicable scopes
+                            const scopeCheck = this.payloadBuilder.checkApplicableScopes(psResponse.value, Activity.uploadText, requestLocation);
+                            if (!scopeCheck.shouldProcess) {
+                                // No matching scopes → contentActivities (fire-and-forget)
+                                this.logger.info(`No matching scopes for user ${userId}, routing ${userFiles.length} file(s) to contentActivities`);
+                                await this.sendContentActivities(userFiles, prInfo, failedPayloads);
+                                continue;
+                            }
+                            // Matching scopes found — route based on execution mode
+                            if (scopeCheck.executionMode === ExecutionMode.evaluateInline) {
+                                // evaluateInline → per-user PC, synchronous, parse for blocks
+                                this.logger.info(`evaluateInline: calling processContent for ${userFiles.length} file(s), user ${userId}`);
+                                const conversationId = crypto.randomUUID();
+                                let seqNum = 0;
+                                for (const file of userFiles) {
+                                    const pcRequests = this.payloadBuilder.buildPerUserProcessContentRequest(file, conversationId, seqNum);
+                                    seqNum += pcRequests.length;
+                                    for (const pcRequest of pcRequests) {
+                                        let pcResponse = await this.purviewClient.processContent(userId, pcRequest, scopeIdentifier, true);
                                         if (!pcResponse.success) {
-                                            this.logger.error(`PC retry failed for file ${file.path}: ${pcResponse.error}`);
-                                            failedPayloads.push(`pc-retry-${file.path}`);
+                                            this.logger.error(`PC failed for file ${file.path}: ${pcResponse.error}. Falling back to contentActivities.`);
+                                            failedPayloads.push(`pc-${file.path}`);
+                                            await this.sendContentActivities([file], prInfo, failedPayloads);
                                             continue;
+                                        }
+                                        const pcData = pcResponse.data;
+                                        // Handle protectionScopeState: "modified" → re-fetch scopes and retry
+                                        if (pcData?.protectionScopeState === 'modified') {
+                                            this.logger.info(`Protection scope state modified for user ${userId}, re-fetching scopes and retrying PC for ${file.path}`);
+                                            const freshPsResponse = await this.purviewClient.searchUserProtectionScope(userId, psRequest);
+                                            if (freshPsResponse.success && freshPsResponse.data) {
+                                                userPsCache.set(userId, freshPsResponse);
+                                                const freshScopeId = freshPsResponse.etag || '';
+                                                pcResponse = await this.purviewClient.processContent(userId, pcRequest, freshScopeId, true);
+                                                if (!pcResponse.success) {
+                                                    this.logger.error(`PC retry failed for file ${file.path}: ${pcResponse.error}`);
+                                                    failedPayloads.push(`pc-retry-${file.path}`);
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        // Check for block actions
+                                        const responseData = pcResponse.data;
+                                        if (responseData && isBlocked(responseData)) {
+                                            const blockingActions = getBlockingActions(responseData);
+                                            this.logger.warn(`BLOCKED: File ${file.path} blocked by ${blockingActions.length} policy action(s)`);
+                                            blockedFiles.push({
+                                                filePath: file.path,
+                                                userId,
+                                                policyActions: blockingActions,
+                                            });
                                         }
                                     }
                                 }
-                                // Check for block actions
-                                const responseData = pcResponse.data;
-                                if (responseData && isBlocked(responseData)) {
-                                    const blockingActions = getBlockingActions(responseData);
-                                    this.logger.warn(`BLOCKED: File ${file.path} blocked by ${blockingActions.length} policy action(s)`);
-                                    blockedFiles.push({
-                                        filePath: file.path,
-                                        userId,
-                                        policyActions: blockingActions,
-                                    });
+                            }
+                            else {
+                                // evaluateOffline → PCA batch (fire-and-forget)
+                                this.logger.info(`evaluateOffline: sending ${userFiles.length} file(s) to PCA batch for user ${userId}`);
+                                const pcaBatchRequests = this.payloadBuilder.buildProcessContentBatchRequest(userFiles);
+                                for (const pcaBatchRequest of pcaBatchRequests) {
+                                    const pcaResult = await this.purviewClient.processContentAsync(pcaBatchRequest);
+                                    if (!pcaResult.success) {
+                                        this.logger.error(`PCA batch failed for user ${userId}: ${pcaResult.error}. Falling back to contentActivities.`);
+                                        failedPayloads.push(`pca-${userId}`);
+                                        await this.sendContentActivities(userFiles, prInfo, failedPayloads);
+                                    }
                                 }
                             }
                         }
-                        else {
-                            // evaluateOffline → PCA batch (fire-and-forget)
-                            this.logger.info(`evaluateOffline: sending ${userFiles.length} file(s) to PCA batch for user ${userId}`);
-                            const pcaBatchRequest = this.payloadBuilder.buildProcessContentBatchRequest(userFiles);
-                            const pcaResult = await this.purviewClient.processContentAsync(pcaBatchRequest);
-                            if (!pcaResult.success) {
-                                this.logger.error(`PCA batch failed for user ${userId}: ${pcaResult.error}. Falling back to contentActivities.`);
-                                failedPayloads.push(`pca-${userId}`);
-                                await this.sendContentActivities(userFiles, prInfo, failedPayloads);
-                            }
-                        }
+                        this.logger.info(`Commit ${sha} processed successfully`);
                     }
                     // Post PR review comment if any files were blocked
                     if (blockedFiles.length > 0 && prInfo.url) {
@@ -63782,7 +64209,7 @@ class GitHubActionsRunner {
                 this.logger.info('Skipping PR diff processing (manually triggered workflow)');
             }
             // Step 5: Set outputs
-            const totalProcessed = fullScanFileCount + diffFiles.length;
+            const totalProcessed = fullScanFileCount + diffFileCount;
             setOutput('processed-files', totalProcessed);
             setOutput('failed-requests', failedPayloads.length);
             setOutput('blocked-files', JSON.stringify(blockedFiles.map(bf => bf.filePath)));
@@ -63832,6 +64259,117 @@ class GitHubActionsRunner {
             ]);
         }
         await summary.write();
+    }
+    /**
+     * Paginates through successful workflow runs in batches of 3, checking each
+     * run's head_sha against the known PR commit SHAs. Returns the first match
+     * (i.e. the most recent successfully processed commit), or null if none found.
+     */
+    async findLastProcessedCommitSha(commitShas) {
+        try {
+            const githubToken = process.env['GITHUB_TOKEN'] || '';
+            if (!githubToken) {
+                this.logger.warn('GITHUB_TOKEN not available for workflow run history check');
+                return null;
+            }
+            const octokit = getOctokit(githubToken);
+            // Determine the workflow ID (just the filename, not the full path —
+            // octokit URL-encodes slashes which causes 404 on the API)
+            let workflowId = '';
+            const workflowRef = process.env['GITHUB_WORKFLOW_REF'] || '';
+            if (workflowRef) {
+                const refMatch = workflowRef.match(/\.github\/workflows\/([^@]+)/);
+                if (refMatch && refMatch[1]) {
+                    workflowId = refMatch[1];
+                }
+            }
+            if (!workflowId && github_context.workflow) {
+                workflowId = github_context.workflow;
+            }
+            if (!workflowId) {
+                this.logger.warn('Could not determine workflow ID for commit dedup');
+                return null;
+            }
+            // Resolve the numeric workflow ID from the current run — this is the most
+            // reliable approach since the current run always knows its own workflow.
+            const numericWorkflowId = await this.resolveWorkflowId(octokit);
+            if (numericWorkflowId === null) {
+                this.logger.info('Could not resolve workflow ID from current run — skipping commit dedup');
+                return null;
+            }
+            // Scope to the PR head branch if available
+            const branch = github_context.payload.pull_request?.['head']?.ref;
+            // Use listWorkflowRunsForRepo (not listWorkflowRuns) because in
+            // cross-repo reusable-workflow setups the numeric workflow_id returned
+            // by getWorkflowRun belongs to the *external* workflow-definition repo,
+            // not the target repo.  listWorkflowRuns would 404 in that case.
+            const perPage = 10;
+            let page = 1;
+            let totalFetched = 0;
+            while (true) {
+                const { data: runs } = await octokit.rest.actions.listWorkflowRunsForRepo({
+                    owner: this.config.repository.owner,
+                    repo: this.config.repository.repo,
+                    status: 'success',
+                    ...(branch ? { branch } : {}),
+                    per_page: perPage,
+                    page,
+                });
+                if (runs.workflow_runs.length === 0) {
+                    break;
+                }
+                // Filter to only runs belonging to our workflow
+                const matchingRuns = runs.workflow_runs.filter((r) => r.workflow_id === numericWorkflowId);
+                for (const run of matchingRuns) {
+                    if (commitShas.has(run.head_sha)) {
+                        this.logger.info(`Found matching head SHA ${run.head_sha} from workflow run ${run.id} (page ${page})`);
+                        return run.head_sha;
+                    }
+                }
+                totalFetched += runs.workflow_runs.length;
+                this.logger.info(`Checked ${totalFetched} run(s) so far (${matchingRuns.length} matched workflow), no match in commit list yet`);
+                if (totalFetched >= runs.total_count) {
+                    break;
+                }
+                page++;
+            }
+            this.logger.info('No previous successful run head SHA matches current commit list — will process all commits');
+            return null;
+        }
+        catch (error) {
+            if (error?.status === 404) {
+                this.logger.warn('Workflow run history returned 404. Ensure the workflow has "actions: read" permission ' +
+                    '(add `permissions: { actions: read }` to your workflow YAML). Proceeding without commit dedup.');
+            }
+            else {
+                this.logger.warn('Failed to query workflow run history for commit dedup', { error });
+            }
+            return null;
+        }
+    }
+    /**
+     * Resolves the numeric workflow ID by inspecting the current workflow run.
+     */
+    async resolveWorkflowId(octokit) {
+        try {
+            const runId = parseInt(this.config.repository.runId, 10);
+            if (!runId) {
+                this.logger.warn('No run ID available to resolve workflow ID');
+                return null;
+            }
+            const { data: run } = await octokit.rest.actions.getWorkflowRun({
+                owner: this.config.repository.owner,
+                repo: this.config.repository.repo,
+                run_id: runId,
+            });
+            const wfId = run.workflow_id;
+            this.logger.info(`Resolved workflow ID ${wfId} from current run ${runId}`);
+            return wfId;
+        }
+        catch (error) {
+            this.logger.warn('Failed to resolve workflow ID from current run', { error });
+            return null;
+        }
     }
 }
 //# sourceMappingURL=gitHubActionsRunner.js.map

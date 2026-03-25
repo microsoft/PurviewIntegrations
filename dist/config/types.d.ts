@@ -283,7 +283,7 @@ export interface ScopeBase {
     identity: string;
 }
 export interface SplitPCRequests {
-    processContentRequest?: ProcessContentBatchRequest;
+    processContentRequests: ProcessContentBatchRequest[];
     uploadSignalRequests: UploadSignalRequest[];
 }
 export interface ProcessContentRequest {
@@ -321,6 +321,10 @@ export interface ScopeCheckResult {
 export interface CommitInfo {
     sha: string;
     email: string | undefined;
+}
+export interface CommitFiles {
+    sha: string;
+    files: FileMetadata[];
 }
 export interface UsersConfig {
     users: UserMapping[];

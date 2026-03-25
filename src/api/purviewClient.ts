@@ -51,8 +51,7 @@ export class PurviewClient {
 
     this.logger.info(`Processing content asynchronously.`);
 
-    const endpoint = `${this.baseUrl}/security/dataSecurityAndGovernance/processContentAsync`
-
+    const endpoint = `${this.baseUrl}/security/dataSecurityAndGovernance/processContentAsync`;
     let payloadString: string = JSON.stringify(payload, this.jsonReplacer);
 
     try {
@@ -318,4 +317,5 @@ export class PurviewClient {
     
     return sanitized.substring(0, 500); // Limit length
   }
+
 }

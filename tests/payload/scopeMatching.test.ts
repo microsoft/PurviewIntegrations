@@ -115,21 +115,22 @@ describe('PayloadBuilder — scope matching', () => {
     it('routes file to process when included and location matches', () => {
       const scopeResponse: ProtectionScopesResponse = { value: [makeScope()] };
       const result = builder.buildProcessAndUploadRequests([file], scopeResponse, prInfo);
-      expect(result.processContentRequest?.processContentRequests).toHaveLength(1);
+      const allItems = result.processContentRequests.flatMap(b => b.processContentRequests);
+      expect(allItems).toHaveLength(1);
       expect(result.uploadSignalRequests).toHaveLength(0);
     });
 
     it('routes file to upload when no scopes match', () => {
       const scopeResponse: ProtectionScopesResponse = { value: [] };
       const result = builder.buildProcessAndUploadRequests([file], scopeResponse, prInfo);
-      expect(result.processContentRequest).toBeUndefined();
+      expect(result.processContentRequests).toHaveLength(0);
       expect(result.uploadSignalRequests).toHaveLength(1);
     });
 
     it('routes file to upload when activity does not match', () => {
       const scope = makeScope({ activities: "downloadFile" });
       const result = builder.buildProcessAndUploadRequests([file], { value: [scope] }, prInfo);
-      expect(result.processContentRequest).toBeUndefined();
+      expect(result.processContentRequests).toHaveLength(0);
       expect(result.uploadSignalRequests).toHaveLength(1);
     });
 
@@ -141,7 +142,8 @@ describe('PayloadBuilder — scope matching', () => {
         },
       });
       const result = builder.buildProcessAndUploadRequests([file], { value: [scope] }, prInfo);
-      expect(result.processContentRequest?.processContentRequests).toHaveLength(1);
+      const allItems = result.processContentRequests.flatMap(b => b.processContentRequests);
+      expect(allItems).toHaveLength(1);
     });
 
     it('matches inclusion by userScope', () => {
@@ -152,7 +154,8 @@ describe('PayloadBuilder — scope matching', () => {
         },
       });
       const result = builder.buildProcessAndUploadRequests([file], { value: [scope] }, prInfo);
-      expect(result.processContentRequest?.processContentRequests).toHaveLength(1);
+      const allItems = result.processContentRequests.flatMap(b => b.processContentRequests);
+      expect(allItems).toHaveLength(1);
     });
 
     it('routes to upload when location is "all"', () => {
@@ -161,7 +164,8 @@ describe('PayloadBuilder — scope matching', () => {
         locations: [{ "@odata.type": "microsoft.graph.policyLocationDomain", value: "all" }],
       });
       const result = builder.buildProcessAndUploadRequests([file], { value: [scope] }, prInfo);
-      expect(result.processContentRequest?.processContentRequests).toHaveLength(1);
+      const allItems = result.processContentRequests.flatMap(b => b.processContentRequests);
+      expect(allItems).toHaveLength(1);
     });
 
     it('exclusion with "all" identity excludes the file', () => {
@@ -173,7 +177,7 @@ describe('PayloadBuilder — scope matching', () => {
       });
       const result = builder.buildProcessAndUploadRequests([file], { value: [scope] }, prInfo);
       // With exclusion identity="All", isExcluded should be true, so file goes to upload
-      expect(result.processContentRequest).toBeUndefined();
+      expect(result.processContentRequests).toHaveLength(0);
       expect(result.uploadSignalRequests).toHaveLength(1);
     });
   });

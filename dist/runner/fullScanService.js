@@ -68,7 +68,7 @@ export class FullScanService {
     /**
      * Performs a full repository scan when it's the first run
      */
-    async performFullScan(stateInfo, failedPayloads, prInfo, userPsDeniedCache) {
+    async performFullScan(stateInfo, failedPayloads, prInfo, userPsDeniedCache, userPsCache) {
         this.logger.info(stateInfo
             ? 'First run detected; scanning full repository.'
             : 'State tracking disabled; scanning full repository.');
@@ -96,7 +96,7 @@ export class FullScanService {
         else {
             // Tenant PS has scopes → group files by user and call per-user PS + PCA
             this.logger.info(`Tenant PS returned ${tenantPsResponse.data.value.length} scope(s). Grouping files by user for per-user PS + PCA.`);
-            await this.processFilesByUser(allFiles, prInfo, failedPayloads, psRequest, userPsDeniedCache);
+            await this.processFilesByUser(allFiles, prInfo, failedPayloads, psRequest, userPsDeniedCache, userPsCache);
         }
         // Write state marker
         if (stateInfo) {
@@ -180,10 +180,11 @@ export class FullScanService {
             const workflowRef = process.env['GITHUB_WORKFLOW_REF'] || '';
             if (workflowRef) {
                 // GITHUB_WORKFLOW_REF format: "octo-org/hello-world/.github/workflows/my-workflow.yml@refs/heads/main"
-                const refMatch = workflowRef.match(/\.github\/workflows\/[^@]+/);
-                if (refMatch) {
-                    workflowId = refMatch[0];
-                    this.logger.info(`Extracted workflow file path from GITHUB_WORKFLOW_REF: ${workflowId}`);
+                // Extract just the filename — octokit URL-encodes slashes in the full path, causing 404
+                const refMatch = workflowRef.match(/\.github\/workflows\/([^@]+)/);
+                if (refMatch && refMatch[1]) {
+                    workflowId = refMatch[1];
+                    this.logger.info(`Extracted workflow filename from GITHUB_WORKFLOW_REF: ${workflowId}`);
                 }
             }
             // Fallback to github.context.workflow if available
@@ -195,27 +196,57 @@ export class FullScanService {
                 this.logger.warn('Could not determine workflow file path from GITHUB_WORKFLOW_REF or github.context, defaulting to non-first run');
                 return false;
             }
-            const { data: workflowRuns } = await octokit.rest.actions.listWorkflowRuns({
+            // Resolve the numeric workflow ID from the current run
+            const runId = parseInt(github.context.runId.toString(), 10);
+            let numericWorkflowId = null;
+            if (runId) {
+                try {
+                    const { data: run } = await octokit.rest.actions.getWorkflowRun({
+                        owner: targetOwner,
+                        repo: targetRepo,
+                        run_id: runId,
+                    });
+                    numericWorkflowId = run.workflow_id;
+                    this.logger.info(`Resolved workflow ID ${numericWorkflowId} from current run ${runId}`);
+                }
+                catch (err) {
+                    this.logger.warn('Failed to resolve workflow ID from current run', { error: err });
+                }
+            }
+            if (numericWorkflowId === null) {
+                this.logger.info('Could not resolve workflow ID — defaulting to first run');
+                return true;
+            }
+            // Use listWorkflowRunsForRepo (not listWorkflowRuns) because in
+            // cross-repo reusable-workflow setups the numeric workflow_id belongs
+            // to the external workflow-definition repo, causing 404 on the
+            // per-workflow endpoint.
+            const { data: allRuns } = await octokit.rest.actions.listWorkflowRunsForRepo({
                 owner: targetOwner,
                 repo: targetRepo,
-                workflow_id: workflowId,
-                status: 'completed',
-                conclusion: 'success',
-                per_page: 1,
+                status: 'success',
+                per_page: 20,
             });
-            // If there are no completed runs, this is the first run
-            const firstRun = workflowRuns.total_count === 0;
+            const matchingCount = allRuns.workflow_runs.filter((r) => r.workflow_id === numericWorkflowId).length;
+            // If there are no completed runs for our workflow, this is the first run
+            const firstRun = matchingCount === 0;
             this.logger.info(firstRun
                 ? 'First workflow run detected based on workflow history'
-                : `Previous workflow runs found (${workflowRuns.total_count} completed runs), not first run`);
+                : `Previous workflow runs found (${matchingCount} successful run(s) in first page), not first run`);
             return firstRun;
         }
         catch (error) {
-            this.logger.warn('Failed to check workflow history, defaulting to non-first run', { error });
+            if (error?.status === 404) {
+                this.logger.warn('Workflow history returned 404. Ensure the workflow has "actions: read" permission ' +
+                    '(add `permissions: { actions: read }` to your workflow YAML). Defaulting to non-first run.');
+            }
+            else {
+                this.logger.warn('Failed to check workflow history, defaulting to non-first run', { error });
+            }
             return false;
         }
     }
-    async processFilesByUser(allFiles, prInfo, failedPayloads, psRequest, userPsDeniedCache) {
+    async processFilesByUser(allFiles, prInfo, failedPayloads, psRequest, userPsDeniedCache, userPsCache) {
         const filesByUser = new Map();
         for (const file of allFiles) {
             const userId = file.authorId || this.config.userId;
@@ -225,8 +256,17 @@ export class FullScanService {
         }
         for (const [userId, userFiles] of filesByUser) {
             this.logger.info(`Full scan: processing ${userFiles.length} file(s) for user ${userId}`);
-            // Call per-user protection scopes
-            const userPsResponse = await this.purviewClient.searchUserProtectionScope(userId, psRequest);
+            // Call per-user protection scopes (check cache first)
+            let userPsResponse = userPsCache.get(userId);
+            if (userPsResponse) {
+                this.logger.info(`Full scan: using cached PS response for user ${userId}`);
+            }
+            else {
+                userPsResponse = await this.purviewClient.searchUserProtectionScope(userId, psRequest);
+                if (userPsResponse.success) {
+                    userPsCache.set(userId, userPsResponse);
+                }
+            }
             if (!userPsResponse.success) {
                 this.logger.error(`User PS failed for ${userId}: ${userPsResponse.error}. Falling back to contentActivities.`);
                 failedPayloads.push(`ps-fullscan-${userId}`);
@@ -244,16 +284,19 @@ export class FullScanService {
                 continue;
             }
             // User has scopes → send PCA batch
-            const pcaBatchRequest = this.payloadBuilder.buildProcessContentBatchRequest(userFiles);
+            const pcaBatchRequests = this.payloadBuilder.buildProcessContentBatchRequest(userFiles);
             this.logger.info(`Full scan: sending ${userFiles.length} file(s) to PCA batch for user ${userId}`);
-            const pcaResult = await this.purviewClient.processContentAsync(pcaBatchRequest);
-            if (!pcaResult.success) {
-                this.logger.error(`PCA batch failed for user ${userId}: ${pcaResult.error}. Falling back to contentActivities.`);
-                failedPayloads.push(`pca-fullscan-${userId}`);
-                await this.sendContentActivities(userFiles, prInfo, failedPayloads);
-            }
-            else {
-                this.logger.info(`Full scan PCA batch completed for user ${userId}`);
+            for (const pcaBatchRequest of pcaBatchRequests) {
+                const pcaResult = await this.purviewClient.processContentAsync(pcaBatchRequest);
+                if (!pcaResult.success) {
+                    this.logger.error(`PCA batch failed for user ${userId}: ${pcaResult.error}. Falling back to contentActivities.`);
+                    failedPayloads.push(`pca-fullscan-${userId}`);
+                    await this.sendContentActivities(userFiles, prInfo, failedPayloads);
+                    break;
+                }
+                else {
+                    this.logger.info(`Full scan PCA batch completed for user ${userId}`);
+                }
             }
         }
     }
