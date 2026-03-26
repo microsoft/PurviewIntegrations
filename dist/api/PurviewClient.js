@@ -155,7 +155,7 @@ export class PurviewClient {
         };
         this.logger.startGroup('Purview API Request');
         this.logger.debug('Sending request', {
-            endpoint,
+            endpoint: this.sanitizeEndpoint(endpoint),
             payloadSize: JSON.stringify(payload).length
         });
         try {
@@ -223,6 +223,9 @@ export class PurviewClient {
     }
     generateRequestId() {
         return `${this.config.repository.runId}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    }
+    sanitizeEndpoint(endpoint) {
+        return endpoint.replace(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/gi, '<guid>');
     }
     sanitizeErrorResponse(response) {
         // Remove any potential sensitive data from error responses

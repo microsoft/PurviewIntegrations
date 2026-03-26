@@ -16,6 +16,7 @@ export declare class PurviewClient {
     private sendRequest;
     private jsonReplacer;
     private generateRequestId;
+    private sanitizeEndpoint;
     private sanitizeErrorResponse;
 }
 //# sourceMappingURL=purviewClient.d.ts.map
