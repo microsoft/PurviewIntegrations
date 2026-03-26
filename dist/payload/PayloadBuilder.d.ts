@@ -1,4 +1,4 @@
-import { ActionConfig, FileMetadata, PurviewPayload, UploadSignalRequest, Activity, PrInfo, ProtectionScopesRequest, ProtectionScopesResponse, SplitPCRequests, ProcessContentBatchRequest, ProcessContentRequest, ScopeCheckResult, PolicyScopes, PolicyLocation } from '../config/types';
+import { ActionConfig, FileMetadata, UploadSignalRequest, Activity, PrInfo, ProtectionScopesRequest, ProtectionScopesResponse, SplitPCRequests, ProcessContentBatchRequest, ProcessContentRequest, ScopeCheckResult, PolicyScopes, PolicyLocation } from '../config/types';
 export declare class PayloadBuilder {
     private readonly config;
     private readonly logger;
@@ -6,8 +6,6 @@ export declare class PayloadBuilder {
     private static readonly domain;
     private static readonly scopeActivity;
     constructor(config: ActionConfig);
-    build(files: FileMetadata[]): Promise<PurviewPayload[]>;
-    private createPayloadObject;
     buildProtectionScopesRequest(): ProtectionScopesRequest;
     buildProcessAndUploadRequests(files: FileMetadata[], scopeResponse: ProtectionScopesResponse, prInfo: PrInfo): SplitPCRequests;
     /**
@@ -27,12 +25,5 @@ export declare class PayloadBuilder {
     buildUploadSignalRequest(files: FileMetadata[], prInfo: PrInfo): UploadSignalRequest[];
     buildProcessContentBatchRequest(files: FileMetadata[]): ProcessContentBatchRequest[];
     private createContentToProcess;
-    private createMetadataMessage;
-    private createFileMessages;
-    private chunkContent;
-    private generateConversationId;
-    private generateMessageId;
-    private getFileTypes;
-    private detectLanguage;
 }
 //# sourceMappingURL=payloadBuilder.d.ts.map

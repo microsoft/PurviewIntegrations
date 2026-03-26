@@ -73,68 +73,6 @@ describe('PayloadBuilder', () => {
     builder = new PayloadBuilder(createConfig());
   });
 
-  describe('build', () => {
-    it('builds payload with metadata and file messages', async () => {
-      const files = [createFile()];
-      const payloads = await builder.build(files);
-
-      expect(payloads.length).toBeGreaterThanOrEqual(1);
-      const payload = payloads[0]!;
-      expect(payload.conversationId).toBeTruthy();
-      expect(payload.conversationId).toMatch(/^conv-/);
-      expect(payload.messages.length).toBeGreaterThanOrEqual(2); // metadata + file
-      expect(payload.metadata.repository).toBe('testOwner/testRepo');
-      expect(payload.metadata.branch).toBe('main');
-      expect(payload.metadata.commit).toBe('abc123');
-      expect(payload.metadata.fileCount).toBe(1);
-    });
-
-    it('includes metadata message with file summary', async () => {
-      const files = [
-        createFile({ path: 'a.ts', size: 100 }),
-        createFile({ path: 'b.js', size: 200 }),
-      ];
-      const payloads = await builder.build(files);
-
-      const allMessages = payloads.flatMap(p => p.messages);
-      const metadataMsg = allMessages.find(m => m.contentType === 'metadata');
-      expect(metadataMsg).toBeDefined();
-      const content = JSON.parse(metadataMsg!.content);
-      expect(content.totalFiles).toBe(2);
-      expect(content.totalSize).toBe(300);
-    });
-
-    it('chunks large file content', async () => {
-      const largeContent = 'x'.repeat(120000);
-      const files = [createFile({ content: largeContent })];
-      const payloads = await builder.build(files);
-
-      const fileMessages = payloads.flatMap(p => p.messages).filter(m => m.contentType === 'file');
-      expect(fileMessages.length).toBeGreaterThan(1);
-    });
-
-    it('splits into multiple payloads when exceeding 3MB', async () => {
-      const hugeContent = 'y'.repeat(2000000);
-      const files = Array.from({ length: 5 }, (_, i) =>
-        createFile({ path: `file${i}.ts`, content: hugeContent })
-      );
-
-      const payloads = await builder.build(files);
-      // Should be split into multiple payloads, none truncated
-      expect(payloads.length).toBeGreaterThan(1);
-      for (const payload of payloads) {
-        const payloadSize = JSON.stringify(payload).length;
-        expect(payloadSize).toBeLessThanOrEqual(1024 * 1024 * 3 + 1000); // 3MB + small tolerance for single large messages
-      }
-      // No content should be truncated
-      const allMessages = payloads.flatMap(p => p.messages);
-      const truncatedMessages = allMessages.filter(
-        m => m.contentType === 'file' && m.content.includes('[truncated]')
-      );
-      expect(truncatedMessages.length).toBe(0);
-    });
-  });
-
   describe('buildProtectionScopesRequest', () => {
     it('returns request with uploadText activity', () => {
       const request = builder.buildProtectionScopesRequest();

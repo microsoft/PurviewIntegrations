@@ -9,7 +9,7 @@ jest.mock('@actions/core', () => ({
 }));
 
 import { PurviewClient } from '../../src/api/purviewClient';
-import { ActionConfig, PurviewPayload, ProcessContentBatchRequest, UploadSignalRequest } from '../../src/config/types';
+import { ActionConfig, ProcessContentBatchRequest, UploadSignalRequest } from '../../src/config/types';
 
 function createConfig(overrides: Partial<ActionConfig> = {}): ActionConfig {
   return {
@@ -68,50 +68,6 @@ describe('PurviewClient', () => {
         activities: 'uploadText',
       });
       expect(result.success).toBe(true);
-    });
-  });
-
-  describe('queueConversationMessage', () => {
-    it('throws when auth token is not set', async () => {
-      const payload: PurviewPayload = {
-        conversationId: 'conv-1',
-        messages: [],
-        metadata: {
-          repository: 'o/r',
-          branch: 'main',
-          commit: 'sha1',
-          runId: '1',
-          timestamp: new Date().toISOString(),
-          fileCount: 0,
-        },
-      };
-
-      await expect(client.queueConversationMessage(payload)).rejects.toThrow(
-        'Authentication token not set'
-      );
-    });
-
-    it('sends POST to correct endpoint', async () => {
-      client.setAuthToken('token');
-      mockFetch({ status: 200, body: {} });
-
-      const payload: PurviewPayload = {
-        conversationId: 'conv-123',
-        messages: [],
-        metadata: {
-          repository: 'o/r',
-          branch: 'main',
-          commit: 'sha1',
-          runId: '1',
-          timestamp: new Date().toISOString(),
-          fileCount: 0,
-        },
-      };
-
-      await client.queueConversationMessage(payload);
-      expect(globalThis.fetch).toHaveBeenCalled();
-      const callUrl = (globalThis.fetch as jest.Mock).mock.calls[0][0];
-      expect(callUrl).toContain('/conversations/conv-123/messages');
     });
   });
 
