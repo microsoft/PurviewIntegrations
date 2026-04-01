@@ -5,6 +5,7 @@ export class PurviewClient {
     logger;
     retryHandler;
     authToken = null;
+    tokenProvider = null;
     baseUrl;
     constructor(config) {
         this.config = config;
@@ -14,6 +15,23 @@ export class PurviewClient {
     }
     setAuthToken(token) {
         this.authToken = token;
+    }
+    /**
+     * Set a callback that returns a fresh access token.  When set, the provider
+     * is called before every request (it should cache internally) and again
+     * after a 401 to attempt a single token-refresh retry.
+     */
+    setTokenProvider(provider) {
+        this.tokenProvider = provider;
+    }
+    async resolveAuthToken() {
+        if (this.tokenProvider) {
+            return await this.tokenProvider();
+        }
+        if (this.authToken) {
+            return this.authToken;
+        }
+        throw new Error('Authentication token not set');
     }
     async processContentAsync(payload) {
         if (!this.authToken) {
@@ -146,9 +164,13 @@ export class PurviewClient {
         }
     }
     async sendRequest(endpoint, payload = null, method = "POST", additionalHeaders = {}, operationName = 'Unknown') {
+        return this.sendRequestInner(endpoint, payload, method, additionalHeaders, operationName, true);
+    }
+    async sendRequestInner(endpoint, payload, method, additionalHeaders, operationName, allowAuthRetry) {
+        const currentToken = await this.resolveAuthToken();
         const requestId = this.generateRequestId();
         const headers = {
-            'Authorization': `Bearer ${this.authToken}`,
+            'Authorization': `Bearer ${currentToken}`,
             'Content-Type': 'application/json',
             'X-Request-Id': requestId,
             'User-Agent': 'PurviewGitHubAction/1.0',
@@ -189,6 +211,12 @@ export class PurviewClient {
                 });
                 // Handle specific error cases
                 if (response.status === 401) {
+                    // If we have a token provider, clear the stale token and retry once
+                    if (allowAuthRetry && this.tokenProvider) {
+                        this.logger.info(`[${operationName}] 401 received — refreshing token and retrying`);
+                        this.logger.endGroup();
+                        return this.sendRequestInner(endpoint, payload, method, additionalHeaders, operationName, false);
+                    }
                     const err = new Error('Authentication failed. Token may be expired.');
                     err.statusCode = 401;
                     throw err;

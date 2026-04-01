@@ -6,6 +6,7 @@ export class PurviewClient {
   private readonly logger: Logger;
   private readonly retryHandler: RetryHandler;
   private authToken: string | null = null;
+  private tokenProvider: (() => Promise<string>) | null = null;
   private readonly baseUrl: string;
   
   constructor(private readonly config: ActionConfig) {
@@ -16,6 +17,25 @@ export class PurviewClient {
   
   setAuthToken(token: string): void {
     this.authToken = token;
+  }
+
+  /**
+   * Set a callback that returns a fresh access token.  When set, the provider
+   * is called before every request (it should cache internally) and again
+   * after a 401 to attempt a single token-refresh retry.
+   */
+  setTokenProvider(provider: () => Promise<string>): void {
+    this.tokenProvider = provider;
+  }
+
+  private async resolveAuthToken(): Promise<string> {
+    if (this.tokenProvider) {
+      return await this.tokenProvider();
+    }
+    if (this.authToken) {
+      return this.authToken;
+    }
+    throw new Error('Authentication token not set');
   }
 
   async processContentAsync(payload: ProcessContentBatchRequest): Promise<ApiResponse> {
@@ -196,9 +216,14 @@ export class PurviewClient {
   }
 
   private async sendRequest(endpoint: string, payload: string | null = null, method: string = "POST", additionalHeaders: Record<string, string> = {}, operationName: string = 'Unknown'): Promise<ApiResponse> {
+    return this.sendRequestInner(endpoint, payload, method, additionalHeaders, operationName, true);
+  }
+
+  private async sendRequestInner(endpoint: string, payload: string | null, method: string, additionalHeaders: Record<string, string>, operationName: string, allowAuthRetry: boolean): Promise<ApiResponse> {
+    const currentToken = await this.resolveAuthToken();
     const requestId = this.generateRequestId();
     const headers: Record<string, string> = {
-      'Authorization': `Bearer ${this.authToken}`,
+      'Authorization': `Bearer ${currentToken}`,
       'Content-Type': 'application/json',
       'X-Request-Id': requestId,
       'User-Agent': 'PurviewGitHubAction/1.0',
@@ -244,6 +269,12 @@ export class PurviewClient {
         
         // Handle specific error cases
         if (response.status === 401) {
+          // If we have a token provider, clear the stale token and retry once
+          if (allowAuthRetry && this.tokenProvider) {
+            this.logger.info(`[${operationName}] 401 received — refreshing token and retrying`);
+            this.logger.endGroup();
+            return this.sendRequestInner(endpoint, payload, method, additionalHeaders, operationName, false);
+          }
           const err = new Error('Authentication failed. Token may be expired.');
           (err as any).statusCode = 401;
           throw err;

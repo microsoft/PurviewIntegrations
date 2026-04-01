@@ -350,6 +350,7 @@ export class PayloadBuilder {
   
   private createContentToProcess(file: FileMetadata, conversationId: string, messageId: number, isTruncated: boolean = false, contentOverride?: string): ContentToProcess {
     let userId = file.authorId;
+    const usingDefaultUser = !userId || userId === this.config.userId;
 
     if (!userId) {
       this.logger.warn(`No user ID found for file: ${file.path} with author ${file.authorEmail}}, using default user ID`);
@@ -368,6 +369,7 @@ export class PayloadBuilder {
       agents.push({
         identifier: file.committerId || file.committerEmail || '',
         name: file.committerLogin || file.committerEmail || undefined,
+        version: usingDefaultUser ? this.config.userId : undefined,
       });
     }
 
@@ -447,6 +449,7 @@ export class PayloadBuilder {
     const now = new Date().toISOString();
     const commitContent = this.buildCommitContentText(commitGroup);
     const commitIdentifier = `commit:${commitGroup.sha}`;
+    const usingDefaultUser = !commitGroup.authorId || commitGroup.authorId === this.config.userId;
 
     const fileContent: TextContent = {
       "@odata.type": "microsoft.graph.textContent",
@@ -458,6 +461,7 @@ export class PayloadBuilder {
       agents.push({
         identifier: commitGroup.committerId || commitGroup.committerEmail || '',
         name: commitGroup.committerLogin || commitGroup.committerEmail || undefined,
+        version: usingDefaultUser ? this.config.userId : undefined,
       });
     }
 

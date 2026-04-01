@@ -61991,6 +61991,7 @@ class PurviewClient {
     logger;
     retryHandler;
     authToken = null;
+    tokenProvider = null;
     baseUrl;
     constructor(config) {
         this.config = config;
@@ -62000,6 +62001,23 @@ class PurviewClient {
     }
     setAuthToken(token) {
         this.authToken = token;
+    }
+    /**
+     * Set a callback that returns a fresh access token.  When set, the provider
+     * is called before every request (it should cache internally) and again
+     * after a 401 to attempt a single token-refresh retry.
+     */
+    setTokenProvider(provider) {
+        this.tokenProvider = provider;
+    }
+    async resolveAuthToken() {
+        if (this.tokenProvider) {
+            return await this.tokenProvider();
+        }
+        if (this.authToken) {
+            return this.authToken;
+        }
+        throw new Error('Authentication token not set');
     }
     async processContentAsync(payload) {
         if (!this.authToken) {
@@ -62132,9 +62150,13 @@ class PurviewClient {
         }
     }
     async sendRequest(endpoint, payload = null, method = "POST", additionalHeaders = {}, operationName = 'Unknown') {
+        return this.sendRequestInner(endpoint, payload, method, additionalHeaders, operationName, true);
+    }
+    async sendRequestInner(endpoint, payload, method, additionalHeaders, operationName, allowAuthRetry) {
+        const currentToken = await this.resolveAuthToken();
         const requestId = this.generateRequestId();
         const headers = {
-            'Authorization': `Bearer ${this.authToken}`,
+            'Authorization': `Bearer ${currentToken}`,
             'Content-Type': 'application/json',
             'X-Request-Id': requestId,
             'User-Agent': 'PurviewGitHubAction/1.0',
@@ -62175,6 +62197,12 @@ class PurviewClient {
                 });
                 // Handle specific error cases
                 if (response.status === 401) {
+                    // If we have a token provider, clear the stale token and retry once
+                    if (allowAuthRetry && this.tokenProvider) {
+                        this.logger.info(`[${operationName}] 401 received — refreshing token and retrying`);
+                        this.logger.endGroup();
+                        return this.sendRequestInner(endpoint, payload, method, additionalHeaders, operationName, false);
+                    }
                     const err = new Error('Authentication failed. Token may be expired.');
                     err.statusCode = 401;
                     throw err;
@@ -63304,6 +63332,7 @@ class PayloadBuilder {
     }
     createContentToProcess(file, conversationId, messageId, isTruncated = false, contentOverride) {
         let userId = file.authorId;
+        const usingDefaultUser = !userId || userId === this.config.userId;
         if (!userId) {
             this.logger.warn(`No user ID found for file: ${file.path} with author ${file.authorEmail}}, using default user ID`);
             userId = this.config.userId;
@@ -63318,6 +63347,7 @@ class PayloadBuilder {
             agents.push({
                 identifier: file.committerId || file.committerEmail || '',
                 name: file.committerLogin || file.committerEmail || undefined,
+                version: usingDefaultUser ? this.config.userId : undefined,
             });
         }
         const entry = {
@@ -63390,6 +63420,7 @@ class PayloadBuilder {
         const now = new Date().toISOString();
         const commitContent = this.buildCommitContentText(commitGroup);
         const commitIdentifier = `commit:${commitGroup.sha}`;
+        const usingDefaultUser = !commitGroup.authorId || commitGroup.authorId === this.config.userId;
         const fileContent = {
             "@odata.type": "microsoft.graph.textContent",
             data: commitContent,
@@ -63399,6 +63430,7 @@ class PayloadBuilder {
             agents.push({
                 identifier: commitGroup.committerId || commitGroup.committerEmail || '',
                 name: commitGroup.committerLogin || commitGroup.committerEmail || undefined,
+                version: usingDefaultUser ? this.config.userId : undefined,
             });
         }
         const entry = {
@@ -64030,6 +64062,11 @@ class GitHubActionsRunner {
             this.logger.info('Authenticating with Azure');
             const token = await this.authService.getToken();
             this.purviewClient.setAuthToken(token.accessToken);
+            this.purviewClient.setTokenProvider(async () => {
+                this.authService.clearCache();
+                const freshToken = await this.authService.getToken();
+                return freshToken.accessToken;
+            });
             // Step 3: Get event context info
             this.logger.info('Processing repository files');
             const prInfo = await this.fileProcessor.getPrInfo();

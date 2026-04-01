@@ -35,6 +35,11 @@ export class GitHubActionsRunner {
             this.logger.info('Authenticating with Azure');
             const token = await this.authService.getToken();
             this.purviewClient.setAuthToken(token.accessToken);
+            this.purviewClient.setTokenProvider(async () => {
+                this.authService.clearCache();
+                const freshToken = await this.authService.getToken();
+                return freshToken.accessToken;
+            });
             // Step 3: Get event context info
             this.logger.info('Processing repository files');
             const prInfo = await this.fileProcessor.getPrInfo();
