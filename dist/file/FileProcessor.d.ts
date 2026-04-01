@@ -63,7 +63,7 @@ export declare class FileProcessor {
     private isCommitEmpty;
     getCommits(): Promise<CommitInfo[]>;
     getAllPRCommits(): Promise<CommitInfo[]>;
-    getFilesGroupedByCommit(lastProcessedHeadSha?: string | null): Promise<CommitFiles[]>;
+    getFilesGroupedByCommit(lastProcessedHeadSha?: string | null, prefetchedCommits?: CommitInfo[]): Promise<CommitFiles[]>;
     getLatestPushFiles(lastProcessedHeadSha?: string | null): Promise<FileMetadata[]>;
     private getPullRequestFiles;
     private getFilesFromPatterns;

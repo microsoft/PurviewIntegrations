@@ -1,11 +1,12 @@
 ```mermaid
 flowchart TD
-    trigger[GitHub Action Triggered] --> stateSetup[State Tracking Setup<br/>resolve workflow repo, branch,<br/>detect first run via state file<br/>or workflow history]
+    trigger[GitHub Action Triggered] --> validate[Validate Inputs<br/>validateInputs → config]
+    validate --> stateSetup[State Tracking Setup<br/>resolve workflow repo, branch,<br/>detect first run via state file<br/>or workflow history]
     stateSetup --> authenticate[Authenticate → MSAL Token]
     authenticate --> getPrInfo[Get PR Info]
     getPrInfo --> isFirstRun{First Run or<br/>Manual Dispatch?}
 
-    %% ── Full Scan Path (first run only) ──
+    %% ── Full Scan Path (first run or manual dispatch) ──
     isFirstRun -->|Yes| getAllFiles[Get ALL repo files<br/>getAllRepoFiles<br/>binary files auto-skipped]
     getAllFiles --> hasFiles{Files found?}
     hasFiles -->|No| noFilesLog[Log: no files for full scan]
@@ -18,14 +19,14 @@ flowchart TD
     groupByUserFull --> fullUserPS
 
     subgraph FULL_SCAN_PER_USER [For each userId — full scan]
-        fullUserPS[Call searchUserProtectionScope<br/>POST /users/userId/.../protectionScopes/compute] --> fullUserPSOk{User PS success?}
+        fullUserPS[Call searchUserProtectionScope<br/>POST /users/userId/.../protectionScopes/compute<br/>check userPsCache first · cache on success] --> fullUserPSOk{User PS success?}
         fullUserPSOk -->|No / 401| fullIs401{401?}
         fullIs401 -->|Yes| fullCache401[Cache userId in<br/>userPsDeniedCache]
         fullIs401 -->|No| fullUserFallback[Fallback: contentActivities<br/>uploadSignal for user's files]
         fullCache401 --> fullUserFallback
         fullUserPSOk -->|Yes| fullUserHasScopes{User PS has scopes?}
         fullUserHasScopes -->|No / empty| fullUserFallback
-        fullUserHasScopes -->|Yes| fullPCABatch[Build PCA batch for user<br/>processContentAsync]
+        fullUserHasScopes -->|Yes| fullPCABatch[Build PCA batch for user<br/>processContentAsync<br/>loop over chunked batches]
         fullPCABatch --> fullPCAOk{PCA success?}
         fullPCAOk -->|No| fullUserFallback
         fullPCAOk -->|Yes| fullPCADone[Log: PCA complete for user]
@@ -37,20 +38,26 @@ flowchart TD
     writeState[Write state marker<br/>best-effort]
     writeState --> isManualDispatch{Manual Dispatch?}
     isManualDispatch -->|Yes| skipDiff[Log: skipping PR diff]
-    isManualDispatch -->|No| getChangedFiles
+    isManualDispatch -->|No| getCommits
     noFilesLog --> isManualDispatch
 
     %% ── PR Diff Path (skipped on manual dispatch) ──
-    isFirstRun -->|No| getChangedFiles
-    getChangedFiles[Get PR changed files<br/>getLatestPushFiles<br/>binary files auto-skipped]
-    getChangedFiles --> hasChangedFiles{Changed files found?}
-    hasChangedFiles -->|No| noChangedFilesLog[Log: no changed files]
-    hasChangedFiles -->|Yes| groupByUserDiff[Group files by userId<br/>authorId or config.userId]
-    groupByUserDiff --> checkDeniedCache
+    isFirstRun -->|No| getCommits
+    getCommits[Get commits<br/>push payload / PR commits /<br/>compare API]
+    getCommits --> findLastProcessed[Find last processed commit<br/>paginate workflow run history<br/>match head_sha to commit list]
+    findLastProcessed --> getGroupedFiles[Get files grouped by commit<br/>getFilesGroupedByCommit<br/>skip already-processed commits<br/>resolve author emails → userIds<br/>via users.json + Graph API cache]
+    getGroupedFiles --> hasCommitGroups{New commits<br/>to process?}
+    hasCommitGroups -->|No| noChangedFilesLog[Log: no new commits to process]
+    hasCommitGroups -->|Yes| commitLoop
 
-    subgraph PER_USER [For each userId]
-        checkDeniedCache{userId in<br/>userPsDeniedCache?} -->|Yes| diffUserFallback[Fallback: contentActivities<br/>uploadSignal for user's files]
-        checkDeniedCache -->|No| diffUserPS[Call searchUserProtectionScope<br/>POST /users/userId/.../protectionScopes/compute<br/>capture etag]
+    subgraph PER_COMMIT_USER [For each commit → for each userId]
+        commitLoop[Group commit files by userId<br/>authorId or config.userId]
+        commitLoop --> checkDeniedCache{userId in<br/>userPsDeniedCache?}
+        checkDeniedCache -->|Yes| diffUserFallback[Fallback: contentActivities<br/>uploadSignal for user's files]
+        checkDeniedCache -->|No| checkPsCache{userId in<br/>userPsCache?}
+        checkPsCache -->|Yes| useCachedPs[Use cached PS response]
+        checkPsCache -->|No| diffUserPS[Call searchUserProtectionScope<br/>POST /users/userId/.../protectionScopes/compute<br/>cache on success]
+        useCachedPs --> diffUserPSOk
         diffUserPS --> diffUserPSOk{User PS success?}
         diffUserPSOk -->|No / 401| diffIs401{401?}
         diffIs401 -->|Yes| diffCache401[Cache userId in<br/>userPsDeniedCache]
@@ -68,23 +75,26 @@ flowchart TD
         pcOk -->|No| pcFallback[Fallback: contentActivities<br/>uploadSignal for file]
         pcOk -->|Yes| scopeState{protectionScopeState?}
         scopeState -->|modified| refetchAndRetry[Re-fetch userPS<br/>retry processContent<br/>with fresh etag]
+        refetchAndRetry --> retryOk{Retry success?}
+        retryOk -->|No| retryFailed[Log failure, continue<br/>add to failedPayloads]
+        retryOk -->|Yes| parsePolicyActions
         scopeState -->|notModified| parsePolicyActions[Parse policyActions]
-        refetchAndRetry --> parsePolicyActions
         parsePolicyActions --> isBlocked{blockAccess or<br/>restrictionAction=block?}
         isBlocked -->|Yes| addToBlocked[Add to blockedFiles]
         isBlocked -->|No| continueInline[Continue]
 
-        execMode -->|evaluateOffline| pcaBatch[PCA batch for user<br/>processContentAsync]
+        execMode -->|evaluateOffline| pcaBatch[PCA batch for user<br/>processContentAsync<br/>loop over chunked batches]
         pcaBatch --> pcaBatchOk{PCA success?}
         pcaBatchOk -->|No| pcaBatchFallback[Fallback: contentActivities<br/>uploadSignal for user's files]
         pcaBatchOk -->|Yes| continueOffline[Continue]
     end
 
-    diffUserFallback --> nextUser[Next user / done]
+    diffUserFallback --> nextUser[Next user / commit / done]
     diffNoScopesFallback --> nextUser
     pcFallback --> nextUser
     addToBlocked --> nextUser
     continueInline --> nextUser
+    retryFailed --> nextUser
     pcaBatchFallback --> nextUser
     continueOffline --> nextUser
 
@@ -101,6 +111,7 @@ flowchart TD
     hasBlockedFinal -->|Yes| actionFailed[core.setFailed<br/>Action FAILED:<br/>blocked files detected]
     hasBlockedFinal -->|No| actionSucceeded[Action succeeded]
 
+    style validate fill:#e1bee7,color:#000
     style processContent fill:#f9a825,color:#000
     style pcaBatch fill:#66bb6a,color:#000
     style fullPCABatch fill:#66bb6a,color:#000
@@ -115,12 +126,14 @@ flowchart TD
     style actionFailed fill:#ef5350,color:#fff
     style fullCache401 fill:#ff9800,color:#000
     style diffCache401 fill:#ff9800,color:#000
+    style findLastProcessed fill:#ce93d8,color:#000
+    style getGroupedFiles fill:#ce93d8,color:#000
 ```
 
 ### Legend
+- 🟣 **Purple** — Input validation, commit dedup & user resolution (Graph API / users.json)
 - 🟡 **Yellow** — processContent (PC) inline: synchronous, per-user, can detect blocks
-- 🟢 **Green** — processContentAsync (PCA) batch: fire-and-forget
+- 🟢 **Green** — processContentAsync (PCA) batch: fire-and-forget, chunked
 - 🔵 **Blue** — contentActivities (uploadSignal): fire-and-forget, fallback on failures
 - 🔴 **Red** — Block detection, PR review comment & action failure
 - 🟠 **Orange** — 401 denial cache (skip user on subsequent calls)
--  **Purple** — External API calls (Graph API user lookup, GitHub API users.json fetch)

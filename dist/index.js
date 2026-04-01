@@ -62562,20 +62562,31 @@ class FileProcessor {
             url: url,
         };
     }
-    async getFilesForCommit(commitSha, userId) {
+    async getFilesForCommit(commitSha, authorId, committerId) {
         const { data: commit } = await this.octokit.rest.repos.getCommit({
             owner: this.config.repository.owner,
             repo: this.config.repository.repo,
             ref: commitSha
         });
+        const commitMeta = {
+            sha: commit.sha,
+            files: [],
+            message: commit.commit.message || undefined,
+            authorEmail: commit.commit.author?.email || undefined,
+            authorLogin: commit.author?.login || undefined,
+            authorName: commit.commit.author?.name || undefined,
+            authorId,
+            committerEmail: commit.commit.committer?.email || undefined,
+            committerLogin: commit.committer?.login || undefined,
+            committerName: commit.commit.committer?.name || undefined,
+            committerId,
+            timestamp: commit.commit.author?.date || commit.commit.committer?.date || undefined,
+        };
         if (!commit.files || commit.files.length === 0) {
             this.logger.warn(`No files found in commit: ${commit.sha}`);
-            return [];
+            return commitMeta;
         }
         this.logger.info(`Processing commit ${commit.sha} with ${commit.files.length} changed file(s).`);
-        let fileMetadata = [];
-        const token = await this.authService.getToken();
-        this.purviewClient.setAuthToken(token.accessToken);
         const filteredCommitFiles = commit.files.filter((f) => this.shouldIncludePath(f.filename));
         this.logger.info(`Commit ${commit.sha}: ${filteredCommitFiles.length}/${commit.files.length} files match the configured patterns.`);
         for (const file of filteredCommitFiles) {
@@ -62601,16 +62612,19 @@ class FileProcessor {
                 content: fileContent,
                 authorLogin: commit.author?.login || commit.committer?.login || null,
                 authorEmail: commit.commit.author?.email || commit.commit.committer?.email || null,
-                authorId: userId,
+                authorId,
+                committerLogin: commit.committer?.login || commit.author?.login || null,
+                committerEmail: commit.commit.committer?.email || commit.commit.author?.email || null,
+                committerId,
                 numberOfDeletions: file.deletions,
                 numberOfAdditions: file.additions,
                 numberOfChanges: file.changes,
                 typeOfChange: file.status,
                 commitTimestamp: commit.commit.author?.date || commit.commit.committer?.date
             };
-            fileMetadata.push(metadata);
+            commitMeta.files.push(metadata);
         }
-        return fileMetadata;
+        return commitMeta;
     }
     /**
      * Computes a unified diff for a file when the commit API omits the patch.
@@ -62834,6 +62848,8 @@ class FileProcessor {
             const commitInfos = commits.map((commit) => ({
                 sha: commit.id,
                 email: commit.author?.email || commit.committer?.email || undefined,
+                committerEmail: commit.committer?.email || undefined,
+                message: commit.message || undefined,
             }));
             return commitInfos;
         }
@@ -62853,7 +62869,9 @@ class FileProcessor {
             });
             const commitInfos = comparison.commits.map((commit) => ({
                 sha: commit.sha,
-                email: commit.commit.author?.email || commit.commit.committer?.email || undefined
+                email: commit.commit.author?.email || commit.commit.committer?.email || undefined,
+                committerEmail: commit.commit.committer?.email || undefined,
+                message: commit.commit.message || undefined,
             }));
             return commitInfos;
         }
@@ -62874,13 +62892,15 @@ class FileProcessor {
         });
         const commitInfos = commits.map((commit) => ({
             sha: commit.sha,
-            email: commit.commit.author?.email || commit.commit.committer?.email || undefined
+            email: commit.commit.author?.email || commit.commit.committer?.email || undefined,
+            committerEmail: commit.commit.committer?.email || undefined,
+            message: commit.commit.message || undefined,
         }));
         this.logger.info(`Found ${commitInfos.length} total commit(s) in PR #${pr.number}`);
         return commitInfos;
     }
-    async getFilesGroupedByCommit(lastProcessedHeadSha) {
-        const allCommits = await this.getCommits();
+    async getFilesGroupedByCommit(lastProcessedHeadSha, prefetchedCommits) {
+        const allCommits = prefetchedCommits ?? await this.getCommits();
         // Find commits to process by skipping everything up to and including lastProcessedHeadSha
         let commitsToProcess = allCommits;
         if (lastProcessedHeadSha) {
@@ -62897,14 +62917,17 @@ class FileProcessor {
             this.logger.info('No new commits to process');
             return [];
         }
-        // Resolve all author emails to user IDs up front
-        const commitAuthorEmails = new Set();
+        // Resolve all author and committer emails to user IDs up front
+        const allEmails = new Set();
         for (const commit of commitsToProcess) {
             if (commit.email) {
-                commitAuthorEmails.add(commit.email.toLowerCase());
+                allEmails.add(commit.email.toLowerCase());
+            }
+            if (commit.committerEmail) {
+                allEmails.add(commit.committerEmail.toLowerCase());
             }
         }
-        const userIdMap = await this.resolveUserIds(commitAuthorEmails);
+        const userIdMap = await this.resolveUserIds(allEmails);
         const result = [];
         for (const commit of commitsToProcess) {
             this.logger.info(`Processing commit: ${commit.sha}`);
@@ -62912,8 +62935,12 @@ class FileProcessor {
             if (commit.email) {
                 userId = userIdMap[commit.email.toLowerCase()] || this.config.userId;
             }
-            const files = await this.getFilesForCommit(commit.sha, userId);
-            result.push({ sha: commit.sha, files });
+            let committerId;
+            if (commit.committerEmail) {
+                committerId = userIdMap[commit.committerEmail.toLowerCase()] || this.config.userId;
+            }
+            const commitFiles = await this.getFilesForCommit(commit.sha, userId, committerId);
+            result.push(commitFiles);
         }
         return result;
     }
@@ -62960,6 +62987,9 @@ class PayloadBuilder {
     maxPayloadSize = 1024 * 1024 * 3; // 3MB
     static domain = "github.com";
     static scopeActivity = "uploadText";
+    static appName = "GitHub";
+    static appVersion = "0.0.1";
+    static correlationIdSuffix = "@GA";
     constructor(config) {
         this.config = config;
         this.logger = new logger_Logger('PayloadBuilder');
@@ -62974,8 +63004,8 @@ class PayloadBuilder {
                 }
             ],
             integratedAppMetadata: {
-                name: "Github",
-                version: "0.0.1",
+                name: PayloadBuilder.appName,
+                version: PayloadBuilder.appVersion,
             },
         };
         return request;
@@ -63151,7 +63181,7 @@ class PayloadBuilder {
     }
     buildUploadSignalRequest(files, prInfo) {
         const requests = [];
-        const conversationId = crypto.randomUUID() + '@GA';
+        const conversationId = crypto.randomUUID() + PayloadBuilder.correlationIdSuffix;
         let seqNum = 0;
         for (const file of files) {
             this.logger.info(`Building upload signal request for file: ${file.path}`);
@@ -63162,7 +63192,7 @@ class PayloadBuilder {
             const singleSize = JSON.stringify(singleCTP).length + 200; // account for wrapper fields
             if (singleSize <= this.maxPayloadSize) {
                 requests.push({
-                    id: crypto.randomUUID() + '@GA',
+                    id: crypto.randomUUID() + PayloadBuilder.correlationIdSuffix,
                     userId,
                     userEmail,
                     scopeIdentifier: "",
@@ -63179,7 +63209,7 @@ class PayloadBuilder {
                     const isLastChunk = i + maxContentPerChunk >= content.length;
                     const chunkCTP = this.createContentToProcess(file, conversationId, seqNum, !isLastChunk, chunk);
                     requests.push({
-                        id: crypto.randomUUID() + '@GA',
+                        id: crypto.randomUUID() + PayloadBuilder.correlationIdSuffix,
                         userId,
                         userEmail,
                         scopeIdentifier: "",
@@ -63194,7 +63224,7 @@ class PayloadBuilder {
     }
     buildProcessContentBatchRequest(files) {
         const allItems = [];
-        const conversationId = crypto.randomUUID() + '@GA';
+        const conversationId = crypto.randomUUID() + PayloadBuilder.correlationIdSuffix;
         let seqNum = 0;
         for (const file of files) {
             const content = file.content || `File: ${file.path} (${file.size} bytes)`;
@@ -63258,37 +63288,159 @@ class PayloadBuilder {
             "@odata.type": "microsoft.graph.textContent",
             data: contentOverride ?? file.content ?? `File: ${file.path} (${file.size} bytes)`
         };
+        const agents = [];
+        if (file.committerId || file.committerEmail) {
+            agents.push({
+                identifier: file.committerId || file.committerEmail || '',
+                name: file.committerLogin || file.committerEmail || undefined,
+            });
+        }
+        const entry = {
+            "@odata.type": "microsoft.graph.processConversationMetadata",
+            identifier: file.path,
+            name: file.path,
+            correlationId: conversationId,
+            sequenceNumber: messageId,
+            length: file.size,
+            isTruncated,
+            createdDateTime: now,
+            modifiedDateTime: now,
+            content: fileContent,
+            ...(agents.length > 0 ? { agents } : {}),
+        };
         return {
-            contentEntries: [
-                {
-                    "@odata.type": "microsoft.graph.processConversationMetadata",
-                    identifier: file.path,
-                    name: file.path,
-                    correlationId: conversationId,
-                    sequenceNumber: messageId,
-                    length: file.size,
-                    isTruncated,
-                    createdDateTime: now,
-                    modifiedDateTime: now,
-                    content: fileContent
-                }
-            ],
+            contentEntries: [entry],
             activityMetadata: {
                 activity: Activity.uploadText,
             },
             deviceMetadata: {},
             integratedAppMetadata: {
-                name: "Github",
-                version: "0.0.1",
+                name: PayloadBuilder.appName,
+                version: PayloadBuilder.appVersion,
             },
             protectedAppMetadata: {
-                name: "Github",
-                version: "0.0.1",
+                name: PayloadBuilder.appName,
+                version: PayloadBuilder.appVersion,
                 applicationLocation: {
                     "@odata.type": "microsoft.graph.policyLocationDomain",
                     value: `https://${PayloadBuilder.domain}`
                 }
             }
+        };
+    }
+    /**
+     * Build the text content representing a git commit's metadata.
+     */
+    buildCommitContentText(commitGroup) {
+        const lines = [
+            `Commit: ${commitGroup.sha}`,
+        ];
+        if (commitGroup.message) {
+            lines.push(`Message: ${commitGroup.message}`);
+        }
+        if (commitGroup.authorName || commitGroup.authorEmail) {
+            lines.push(`Author: ${commitGroup.authorName || ''} <${commitGroup.authorEmail || ''}>`);
+        }
+        if (commitGroup.committerName || commitGroup.committerEmail) {
+            lines.push(`Committer: ${commitGroup.committerName || ''} <${commitGroup.committerEmail || ''}>`);
+        }
+        if (commitGroup.timestamp) {
+            lines.push(`Date: ${commitGroup.timestamp}`);
+        }
+        if (commitGroup.files.length > 0) {
+            lines.push('', 'Changed files:');
+            for (const file of commitGroup.files) {
+                const changeType = file.typeOfChange || 'modified';
+                const additions = file.numberOfAdditions ?? 0;
+                const deletions = file.numberOfDeletions ?? 0;
+                lines.push(`  ${changeType}: ${file.path} (+${additions} -${deletions})`);
+            }
+        }
+        return lines.join('\n');
+    }
+    /**
+     * Build a ContentToProcess for a git commit (commit-level metadata request).
+     */
+    buildCommitContentToProcess(commitGroup, conversationId, sequenceNumber) {
+        const now = new Date().toISOString();
+        const commitContent = this.buildCommitContentText(commitGroup);
+        const commitIdentifier = `commit:${commitGroup.sha}`;
+        const fileContent = {
+            "@odata.type": "microsoft.graph.textContent",
+            data: commitContent,
+        };
+        const agents = [];
+        if (commitGroup.committerId || commitGroup.committerEmail) {
+            agents.push({
+                identifier: commitGroup.committerId || commitGroup.committerEmail || '',
+                name: commitGroup.committerLogin || commitGroup.committerEmail || undefined,
+            });
+        }
+        const entry = {
+            "@odata.type": "microsoft.graph.processConversationMetadata",
+            identifier: commitIdentifier,
+            name: commitIdentifier,
+            correlationId: conversationId,
+            sequenceNumber,
+            length: commitContent.length,
+            isTruncated: false,
+            createdDateTime: commitGroup.timestamp || now,
+            modifiedDateTime: commitGroup.timestamp || now,
+            content: fileContent,
+            ...(agents.length > 0 ? { agents } : {}),
+        };
+        return {
+            contentEntries: [entry],
+            activityMetadata: {
+                activity: Activity.uploadText,
+            },
+            deviceMetadata: {},
+            integratedAppMetadata: {
+                name: PayloadBuilder.appName,
+                version: PayloadBuilder.appVersion,
+            },
+            protectedAppMetadata: {
+                name: PayloadBuilder.appName,
+                version: PayloadBuilder.appVersion,
+                applicationLocation: {
+                    "@odata.type": "microsoft.graph.policyLocationDomain",
+                    value: `https://${PayloadBuilder.domain}`,
+                },
+            },
+        };
+    }
+    /**
+     * Build a per-user ProcessContentRequest for a git commit (inline PC).
+     */
+    buildCommitProcessContentRequest(commitGroup, conversationId, sequenceNumber) {
+        const ctp = this.buildCommitContentToProcess(commitGroup, conversationId, sequenceNumber);
+        return { contentToProcess: ctp };
+    }
+    /**
+     * Build an UploadSignalRequest for a git commit (contentActivities fallback).
+     */
+    buildCommitUploadSignalRequest(commitGroup, prInfo) {
+        const conversationId = crypto.randomUUID() + PayloadBuilder.correlationIdSuffix;
+        const ctp = this.buildCommitContentToProcess(commitGroup, conversationId, 0);
+        const userId = commitGroup.authorId || this.config.userId;
+        const userEmail = commitGroup.authorEmail || prInfo.authorEmail;
+        return {
+            id: crypto.randomUUID() + PayloadBuilder.correlationIdSuffix,
+            userId,
+            userEmail,
+            scopeIdentifier: "",
+            contentMetadata: ctp,
+        };
+    }
+    /**
+     * Build a ProcessContentBatchRequest item for a git commit (PCA batch).
+     */
+    buildCommitProcessContentBatchItem(commitGroup, conversationId, sequenceNumber) {
+        const ctp = this.buildCommitContentToProcess(commitGroup, conversationId, sequenceNumber);
+        return {
+            contentToProcess: ctp,
+            userId: commitGroup.authorId || this.config.userId,
+            requestId: crypto.randomUUID(),
         };
     }
 }
@@ -63858,9 +64010,7 @@ class GitHubActionsRunner {
             const prInfo = await this.fileProcessor.getPrInfo();
             const failedPayloads = [];
             const blockedFiles = [];
-            // Cache of userIds that returned 401 on User PS — skip them on subsequent calls
             const userPsDeniedCache = new Set();
-            // Cache of successful User PS responses — avoids redundant API calls for the same user across commits
             const userPsCache = new Map();
             // ─── Full Scan Path (first run or manual workflow dispatch) ───
             let fullScanFileCount = 0;
@@ -63875,189 +64025,253 @@ class GitHubActionsRunner {
             // ─── PR Diff Path (skip if manually triggered) ───
             let diffFileCount = 0;
             if (!isManualDispatch) {
-                // Step 4: Process commits
-                this.logger.info('Running PR diff flow');
-                // Get the commit list, then find the last processed position via workflow run history
-                const allCommits = await this.fileProcessor.getCommits();
-                const commitShaSet = new Set(allCommits.map(c => c.sha));
-                const lastProcessedSha = await this.findLastProcessedCommitSha(commitShaSet);
-                // Get files grouped by commit, skipping already-processed commits
-                const commitGroups = await this.fileProcessor.getFilesGroupedByCommit(lastProcessedSha);
-                if (commitGroups.length === 0) {
-                    this.logger.warn('No new commits to process for PR diff');
-                }
-                else {
-                    for (const commitGroup of commitGroups) {
-                        const { sha, files } = commitGroup;
-                        this.logger.info(`── Processing commit ${sha} with ${files.length} file(s) ──`);
-                        if (files.length === 0) {
-                            this.logger.info(`Commit ${sha} has no matching files, skipping`);
-                            continue;
-                        }
-                        diffFileCount += files.length;
-                        // Group files by userId
-                        const filesByUser = new Map();
-                        for (const file of files) {
-                            const userId = file.authorId || this.config.userId;
-                            const existing = filesByUser.get(userId) || [];
-                            existing.push(file);
-                            filesByUser.set(userId, existing);
-                        }
-                        this.logger.info(`Commit ${sha}: ${files.length} file(s) across ${filesByUser.size} user(s)`);
-                        const psRequest = this.payloadBuilder.buildProtectionScopesRequest();
-                        const requestLocation = psRequest.locations?.[0];
-                        // Process each user's files
-                        for (const [userId, userFiles] of filesByUser) {
-                            this.logger.info(`Processing ${userFiles.length} file(s) for user ${userId}`);
-                            // Check User PS denial cache (401 from earlier call)
-                            if (userPsDeniedCache.has(userId)) {
-                                this.logger.warn(`Skipping user ${userId} — cached 401 from earlier PS call. Routing to contentActivities.`);
-                                await this.sendContentActivities(userFiles, prInfo, failedPayloads);
-                                continue;
-                            }
-                            // Call per-user protection scopes (check cache first)
-                            let psApiResponse = userPsCache.get(userId);
-                            if (psApiResponse) {
-                                this.logger.info(`Using cached PS response for user ${userId}`);
-                            }
-                            else {
-                                psApiResponse = await this.purviewClient.searchUserProtectionScope(userId, psRequest);
-                                if (psApiResponse.success) {
-                                    userPsCache.set(userId, psApiResponse);
-                                }
-                            }
-                            if (!psApiResponse.success) {
-                                this.logger.error(`Failed to get protection scopes for user ${userId}: ${psApiResponse.error}`);
-                                failedPayloads.push(`ps-${userId}`);
-                                // Cache 401s so we don't retry this user
-                                if (psApiResponse.statusCode === 401) {
-                                    userPsDeniedCache.add(userId);
-                                    this.logger.warn(`User ${userId} returned 401 on PS — cached, will skip in future calls.`);
-                                }
-                                await this.sendContentActivities(userFiles, prInfo, failedPayloads);
-                                continue;
-                            }
-                            const psResponse = psApiResponse.data;
-                            const scopeIdentifier = psApiResponse.etag || '';
-                            if (!psResponse || !psResponse.value) {
-                                this.logger.warn(`Empty protection scopes response for user ${userId}, routing all files to contentActivities`);
-                                await this.sendContentActivities(userFiles, prInfo, failedPayloads);
-                                continue;
-                            }
-                            // Check applicable scopes
-                            const scopeCheck = this.payloadBuilder.checkApplicableScopes(psResponse.value, Activity.uploadText, requestLocation);
-                            if (!scopeCheck.shouldProcess) {
-                                // No matching scopes → contentActivities (fire-and-forget)
-                                this.logger.info(`No matching scopes for user ${userId}, routing ${userFiles.length} file(s) to contentActivities`);
-                                await this.sendContentActivities(userFiles, prInfo, failedPayloads);
-                                continue;
-                            }
-                            // Matching scopes found — route based on execution mode
-                            if (scopeCheck.executionMode === ExecutionMode.evaluateInline) {
-                                // evaluateInline → per-user PC, synchronous, parse for blocks
-                                this.logger.info(`evaluateInline: calling processContent for ${userFiles.length} file(s), user ${userId}`);
-                                const conversationId = crypto.randomUUID();
-                                let seqNum = 0;
-                                for (const file of userFiles) {
-                                    const pcRequests = this.payloadBuilder.buildPerUserProcessContentRequest(file, conversationId, seqNum);
-                                    seqNum += pcRequests.length;
-                                    for (const pcRequest of pcRequests) {
-                                        let pcResponse = await this.purviewClient.processContent(userId, pcRequest, scopeIdentifier, true);
-                                        if (!pcResponse.success) {
-                                            this.logger.error(`PC failed for file ${file.path}: ${pcResponse.error}. Falling back to contentActivities.`);
-                                            failedPayloads.push(`pc-${file.path}`);
-                                            await this.sendContentActivities([file], prInfo, failedPayloads);
-                                            continue;
-                                        }
-                                        const pcData = pcResponse.data;
-                                        // Handle protectionScopeState: "modified" → re-fetch scopes and retry
-                                        if (pcData?.protectionScopeState === 'modified') {
-                                            this.logger.info(`Protection scope state modified for user ${userId}, re-fetching scopes and retrying PC for ${file.path}`);
-                                            const freshPsResponse = await this.purviewClient.searchUserProtectionScope(userId, psRequest);
-                                            if (freshPsResponse.success && freshPsResponse.data) {
-                                                userPsCache.set(userId, freshPsResponse);
-                                                const freshScopeId = freshPsResponse.etag || '';
-                                                pcResponse = await this.purviewClient.processContent(userId, pcRequest, freshScopeId, true);
-                                                if (!pcResponse.success) {
-                                                    this.logger.error(`PC retry failed for file ${file.path}: ${pcResponse.error}`);
-                                                    failedPayloads.push(`pc-retry-${file.path}`);
-                                                    continue;
-                                                }
-                                            }
-                                        }
-                                        // Check for block actions
-                                        const responseData = pcResponse.data;
-                                        if (responseData && isBlocked(responseData)) {
-                                            const blockingActions = getBlockingActions(responseData);
-                                            this.logger.warn(`BLOCKED: File ${file.path} blocked by ${blockingActions.length} policy action(s)`);
-                                            blockedFiles.push({
-                                                filePath: file.path,
-                                                userId,
-                                                policyActions: blockingActions,
-                                            });
-                                        }
-                                    }
-                                }
-                            }
-                            else {
-                                // evaluateOffline → PCA batch (fire-and-forget)
-                                this.logger.info(`evaluateOffline: sending ${userFiles.length} file(s) to PCA batch for user ${userId}`);
-                                const pcaBatchRequests = this.payloadBuilder.buildProcessContentBatchRequest(userFiles);
-                                for (const pcaBatchRequest of pcaBatchRequests) {
-                                    const pcaResult = await this.purviewClient.processContentAsync(pcaBatchRequest);
-                                    if (!pcaResult.success) {
-                                        this.logger.error(`PCA batch failed for user ${userId}: ${pcaResult.error}. Falling back to contentActivities.`);
-                                        failedPayloads.push(`pca-${userId}`);
-                                        await this.sendContentActivities(userFiles, prInfo, failedPayloads);
-                                    }
-                                }
-                            }
-                        }
-                        this.logger.info(`Commit ${sha} processed successfully`);
-                    }
-                    // Post PR review comment if any files were blocked
-                    if (blockedFiles.length > 0 && prInfo.url) {
-                        this.logger.info(`${blockedFiles.length} file(s) blocked, posting PR review comment`);
-                        try {
-                            const githubToken = process.env['GITHUB_TOKEN'] || '';
-                            const prNumber = parseInt(prInfo.url?.split('/').pop() || '0', 10);
-                            if (githubToken && prNumber > 0) {
-                                const octokit = getOctokit(githubToken);
-                                const prCommentService = new PrCommentService(octokit, this.config.repository.owner, this.config.repository.repo, prNumber);
-                                await prCommentService.postBlockedFilesReview(blockedFiles);
-                            }
-                            else {
-                                this.logger.warn('Cannot post PR comment: missing GITHUB_TOKEN or PR number');
-                            }
-                        }
-                        catch (e) {
-                            this.logger.warn('Failed to post PR review comment (non-fatal).', { error: e });
-                        }
-                    }
-                }
+                diffFileCount = await this.processDiffPath(prInfo, failedPayloads, blockedFiles, userPsDeniedCache, userPsCache);
             }
             else {
                 this.logger.info('Skipping PR diff processing (manually triggered workflow)');
             }
-            // Step 5: Set outputs
+            // ─── Outputs & Summary ───
             const totalProcessed = fullScanFileCount + diffFileCount;
             setOutput('processed-files', totalProcessed);
             setOutput('failed-requests', failedPayloads.length);
             setOutput('blocked-files', JSON.stringify(blockedFiles.map(bf => bf.filePath)));
-            // Step 6: Summary
             await this.createSummary(totalProcessed, failedPayloads, blockedFiles);
-            // Step 7: Fail the action if any files were blocked
             if (blockedFiles.length > 0) {
                 const blockedFilePaths = blockedFiles.map(bf => bf.filePath).join(', ');
                 const message = `Action failed: ${blockedFiles.length} file(s) were blocked by data security policies: ${blockedFilePaths}`;
                 this.logger.error(message);
                 setFailed(message);
-                return;
             }
         }
         catch (error) {
             this.logger.error('Execution failed', { error });
             throw error;
+        }
+    }
+    // ──────────────────────────────────────────────────────────────────
+    //  Diff path orchestration
+    // ──────────────────────────────────────────────────────────────────
+    async processDiffPath(prInfo, failedPayloads, blockedFiles, userPsDeniedCache, userPsCache) {
+        this.logger.info('Running PR diff flow');
+        const allCommits = await this.fileProcessor.getCommits();
+        const commitShaSet = new Set(allCommits.map(c => c.sha));
+        const lastProcessedSha = await this.findLastProcessedCommitSha(commitShaSet);
+        const commitGroups = await this.fileProcessor.getFilesGroupedByCommit(lastProcessedSha, allCommits);
+        if (commitGroups.length === 0) {
+            this.logger.warn('No new commits to process for PR diff');
+            return 0;
+        }
+        const psRequest = this.payloadBuilder.buildProtectionScopesRequest();
+        const requestLocation = psRequest.locations?.[0];
+        if (!requestLocation) {
+            this.logger.error('Protection scope request has no locations configured');
+            throw new Error('Protection scope request has no locations configured');
+        }
+        const ctx = {
+            prInfo, psRequest, requestLocation,
+            failedPayloads, blockedFiles, userPsDeniedCache, userPsCache,
+        };
+        let diffFileCount = 0;
+        for (const commitGroup of commitGroups) {
+            diffFileCount += await this.processCommitGroup(commitGroup, ctx);
+        }
+        // Post PR review comment if any files were blocked
+        if (blockedFiles.length > 0 && prInfo.url) {
+            await this.postBlockedFilesReview(prInfo, blockedFiles);
+        }
+        return diffFileCount;
+    }
+    async processCommitGroup(commitGroup, ctx) {
+        const { sha, files } = commitGroup;
+        this.logger.info(`── Processing commit ${sha} with ${files.length} file(s) ──`);
+        if (files.length === 0) {
+            this.logger.info(`Commit ${sha} has no matching files, skipping`);
+            return 0;
+        }
+        // Group files by userId
+        const filesByUser = new Map();
+        for (const file of files) {
+            const userId = file.authorId || this.config.userId;
+            const existing = filesByUser.get(userId) || [];
+            existing.push(file);
+            filesByUser.set(userId, existing);
+        }
+        this.logger.info(`Commit ${sha}: ${files.length} file(s) across ${filesByUser.size} user(s)`);
+        for (const [userId, userFiles] of filesByUser) {
+            await this.processUserFiles(userId, userFiles, ctx);
+        }
+        await this.sendCommitRequest(commitGroup, ctx);
+        this.logger.info(`Commit ${sha} processed successfully`);
+        return files.length;
+    }
+    // ──────────────────────────────────────────────────────────────────
+    //  Per-user file processing
+    // ──────────────────────────────────────────────────────────────────
+    async processUserFiles(userId, userFiles, ctx) {
+        this.logger.info(`Processing ${userFiles.length} file(s) for user ${userId}`);
+        const psResult = await this.resolveUserPsWithCache(userId, ctx);
+        if (!psResult) {
+            await this.sendContentActivities(userFiles, ctx.prInfo, ctx.failedPayloads);
+            return;
+        }
+        const { psResponse, scopeIdentifier } = psResult;
+        // Check applicable scopes
+        const scopeCheck = this.payloadBuilder.checkApplicableScopes(psResponse.value, Activity.uploadText, ctx.requestLocation);
+        if (!scopeCheck.shouldProcess) {
+            this.logger.info(`No matching scopes for user ${userId}, routing ${userFiles.length} file(s) to contentActivities`);
+            await this.sendContentActivities(userFiles, ctx.prInfo, ctx.failedPayloads);
+            return;
+        }
+        if (scopeCheck.executionMode === ExecutionMode.evaluateInline) {
+            await this.processFilesInline(userId, userFiles, scopeIdentifier, ctx);
+        }
+        else {
+            await this.processFilesOffline(userId, userFiles, ctx);
+        }
+    }
+    async processFilesInline(userId, userFiles, scopeIdentifier, ctx) {
+        this.logger.info(`evaluateInline: calling processContent for ${userFiles.length} file(s), user ${userId}`);
+        const conversationId = crypto.randomUUID();
+        let seqNum = 0;
+        for (const file of userFiles) {
+            const pcRequests = this.payloadBuilder.buildPerUserProcessContentRequest(file, conversationId, seqNum);
+            seqNum += pcRequests.length;
+            for (const pcRequest of pcRequests) {
+                let pcResponse = await this.purviewClient.processContent(userId, pcRequest, scopeIdentifier, true);
+                if (!pcResponse.success) {
+                    this.logger.error(`PC failed for file ${file.path}: ${pcResponse.error}. Falling back to contentActivities.`);
+                    ctx.failedPayloads.push(`pc-${file.path}`);
+                    await this.sendContentActivities([file], ctx.prInfo, ctx.failedPayloads);
+                    continue;
+                }
+                const pcData = pcResponse.data;
+                // Handle protectionScopeState: "modified" → re-fetch scopes and retry
+                if (pcData?.protectionScopeState === 'modified') {
+                    this.logger.info(`Protection scope state modified for user ${userId}, re-fetching scopes and retrying PC for ${file.path}`);
+                    const freshPsResponse = await this.purviewClient.searchUserProtectionScope(userId, ctx.psRequest);
+                    if (freshPsResponse.success && freshPsResponse.data) {
+                        ctx.userPsCache.set(userId, freshPsResponse);
+                        const freshScopeId = freshPsResponse.etag || '';
+                        pcResponse = await this.purviewClient.processContent(userId, pcRequest, freshScopeId, true);
+                        if (!pcResponse.success) {
+                            this.logger.error(`PC retry failed for file ${file.path}: ${pcResponse.error}`);
+                            ctx.failedPayloads.push(`pc-retry-${file.path}`);
+                            continue;
+                        }
+                    }
+                }
+                // Check for block actions
+                const responseData = pcResponse.data;
+                if (responseData && isBlocked(responseData)) {
+                    const blockingActions = getBlockingActions(responseData);
+                    this.logger.warn(`BLOCKED: File ${file.path} blocked by ${blockingActions.length} policy action(s)`);
+                    ctx.blockedFiles.push({
+                        filePath: file.path,
+                        userId,
+                        policyActions: blockingActions,
+                    });
+                }
+            }
+        }
+    }
+    async processFilesOffline(userId, userFiles, ctx) {
+        this.logger.info(`evaluateOffline: sending ${userFiles.length} file(s) to PCA batch for user ${userId}`);
+        const pcaBatchRequests = this.payloadBuilder.buildProcessContentBatchRequest(userFiles);
+        for (const pcaBatchRequest of pcaBatchRequests) {
+            const pcaResult = await this.purviewClient.processContentAsync(pcaBatchRequest);
+            if (!pcaResult.success) {
+                this.logger.error(`PCA batch failed for user ${userId}: ${pcaResult.error}. Falling back to contentActivities.`);
+                ctx.failedPayloads.push(`pca-${userId}`);
+                await this.sendContentActivities(userFiles, ctx.prInfo, ctx.failedPayloads);
+            }
+        }
+    }
+    // ──────────────────────────────────────────────────────────────────
+    //  Shared PS resolution + commit-level + fallback helpers
+    // ──────────────────────────────────────────────────────────────────
+    /**
+     * Resolve user protection scopes using the cache. Returns the PS response
+     * and etag, or null if the caller should fall back to contentActivities.
+     */
+    async resolveUserPsWithCache(userId, ctx) {
+        if (ctx.userPsDeniedCache.has(userId)) {
+            this.logger.warn(`Skipping user ${userId} — cached 401 from earlier PS call. Routing to contentActivities.`);
+            return null;
+        }
+        let psApiResponse = ctx.userPsCache.get(userId);
+        if (psApiResponse) {
+            this.logger.info(`Using cached PS response for user ${userId}`);
+        }
+        else {
+            psApiResponse = await this.purviewClient.searchUserProtectionScope(userId, ctx.psRequest);
+            if (psApiResponse.success) {
+                ctx.userPsCache.set(userId, psApiResponse);
+            }
+        }
+        if (!psApiResponse.success) {
+            this.logger.error(`Failed to get protection scopes for user ${userId}: ${psApiResponse.error}`);
+            ctx.failedPayloads.push(`ps-${userId}`);
+            if (psApiResponse.statusCode === 401) {
+                ctx.userPsDeniedCache.add(userId);
+                this.logger.warn(`User ${userId} returned 401 on PS — cached, will skip in future calls.`);
+            }
+            return null;
+        }
+        const psResponse = psApiResponse.data;
+        if (!psResponse || !psResponse.value) {
+            this.logger.warn(`Empty protection scopes response for user ${userId}, routing to contentActivities`);
+            return null;
+        }
+        return { psResponse, scopeIdentifier: psApiResponse.etag || '' };
+    }
+    /**
+     * Send a commit-level request through the same routing as file requests.
+     */
+    async sendCommitRequest(commitGroup, ctx) {
+        const commitUserId = commitGroup.authorId || this.config.userId;
+        const commitIdentifier = `commit:${commitGroup.sha}`;
+        this.logger.info(`Sending commit-level request for ${commitIdentifier}, user ${commitUserId}`);
+        const psResult = await this.resolveUserPsWithCache(commitUserId, ctx);
+        if (!psResult) {
+            await this.sendCommitContentActivity(commitGroup, ctx.prInfo, ctx.failedPayloads);
+            return;
+        }
+        const scopeCheck = this.payloadBuilder.checkApplicableScopes(psResult.psResponse.value, Activity.uploadText, ctx.requestLocation);
+        if (!scopeCheck.shouldProcess) {
+            await this.sendCommitContentActivity(commitGroup, ctx.prInfo, ctx.failedPayloads);
+            return;
+        }
+        if (scopeCheck.executionMode === ExecutionMode.evaluateInline) {
+            const conversationId = crypto.randomUUID();
+            const pcRequest = this.payloadBuilder.buildCommitProcessContentRequest(commitGroup, conversationId, 0);
+            const pcResponse = await this.purviewClient.processContent(commitUserId, pcRequest, psResult.scopeIdentifier, true);
+            if (!pcResponse.success) {
+                this.logger.error(`PC failed for commit ${commitGroup.sha}: ${pcResponse.error}. Falling back to contentActivities.`);
+                ctx.failedPayloads.push(`pc-commit-${commitGroup.sha}`);
+                await this.sendCommitContentActivity(commitGroup, ctx.prInfo, ctx.failedPayloads);
+                return;
+            }
+            const pcData = pcResponse.data;
+            if (pcData && isBlocked(pcData)) {
+                const blockingActions = getBlockingActions(pcData);
+                this.logger.warn(`BLOCKED: Commit ${commitGroup.sha} blocked by ${blockingActions.length} policy action(s)`);
+                ctx.blockedFiles.push({
+                    filePath: commitIdentifier,
+                    userId: commitUserId,
+                    policyActions: blockingActions,
+                });
+            }
+        }
+        else {
+            const conversationId = crypto.randomUUID() + '@GA';
+            const pcaItem = this.payloadBuilder.buildCommitProcessContentBatchItem(commitGroup, conversationId, 0);
+            const pcaBatch = { processContentRequests: [pcaItem] };
+            const pcaResult = await this.purviewClient.processContentAsync(pcaBatch);
+            if (!pcaResult.success) {
+                this.logger.error(`PCA failed for commit ${commitGroup.sha}: ${pcaResult.error}. Falling back to contentActivities.`);
+                ctx.failedPayloads.push(`pca-commit-${commitGroup.sha}`);
+                await this.sendCommitContentActivity(commitGroup, ctx.prInfo, ctx.failedPayloads);
+            }
         }
     }
     async sendContentActivities(files, prInfo, failedPayloads) {
@@ -64068,6 +64282,32 @@ class GitHubActionsRunner {
                 this.logger.error(`ContentActivities upload failed for ${req.contentMetadata.contentEntries[0]?.identifier}: ${result.error}`);
                 failedPayloads.push(req.id);
             }
+        }
+    }
+    async sendCommitContentActivity(commitGroup, prInfo, failedPayloads) {
+        const req = this.payloadBuilder.buildCommitUploadSignalRequest(commitGroup, prInfo);
+        const result = await this.purviewClient.uploadSignal(req);
+        if (!result.success) {
+            this.logger.error(`ContentActivities upload failed for commit ${commitGroup.sha}: ${result.error}`);
+            failedPayloads.push(`ca-commit-${commitGroup.sha}`);
+        }
+    }
+    async postBlockedFilesReview(prInfo, blockedFiles) {
+        this.logger.info(`${blockedFiles.length} file(s) blocked, posting PR review comment`);
+        try {
+            const githubToken = process.env['GITHUB_TOKEN'] || '';
+            const prNumber = parseInt(prInfo.url?.split('/').pop() || '0', 10);
+            if (githubToken && prNumber > 0) {
+                const octokit = getOctokit(githubToken);
+                const prCommentService = new PrCommentService(octokit, this.config.repository.owner, this.config.repository.repo, prNumber);
+                await prCommentService.postBlockedFilesReview(blockedFiles);
+            }
+            else {
+                this.logger.warn('Cannot post PR comment: missing GITHUB_TOKEN or PR number');
+            }
+        }
+        catch (e) {
+            this.logger.warn('Failed to post PR review comment (non-fatal).', { error: e });
         }
     }
     async createSummary(processed, failed, blocked = []) {

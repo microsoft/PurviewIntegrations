@@ -89,7 +89,7 @@ describe('PayloadBuilder', () => {
 
     it('includes integratedAppMetadata', () => {
       const request = builder.buildProtectionScopesRequest();
-      expect(request.integratedAppMetadata?.name).toBe('Github');
+      expect(request.integratedAppMetadata?.name).toBe('GitHub');
       expect(request.integratedAppMetadata?.version).toBe('0.0.1');
     });
   });

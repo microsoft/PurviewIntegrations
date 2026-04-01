@@ -1,4 +1,4 @@
-import { ActionConfig, FileMetadata, UploadSignalRequest, Activity, TextContent, PrInfo, ProtectionScopesRequest, ProtectionScopesResponse, SplitPCRequests, ProtectionScopeActivities, ProcessContentBatchRequest, ProcessContentRequestItem, ProcessContentRequest, ContentToProcess, ScopeCheckResult, ExecutionMode, PolicyScopes, PolicyLocation, DlpActionInfo } from '../config/types';
+import { ActionConfig, FileMetadata, UploadSignalRequest, Activity, TextContent, PrInfo, ProtectionScopesRequest, ProtectionScopesResponse, SplitPCRequests, ProtectionScopeActivities, ProcessContentBatchRequest, ProcessContentRequestItem, ProcessContentRequest, ContentToProcess, ScopeCheckResult, ExecutionMode, PolicyScopes, PolicyLocation, DlpActionInfo, CommitFiles, AiAgentInfo, ProcessConversationMetadata } from '../config/types';
 import { Logger } from '../utils/logger';
 
 export class PayloadBuilder {
@@ -6,6 +6,9 @@ export class PayloadBuilder {
   private readonly maxPayloadSize = 1024 * 1024 * 3; // 3MB
   private static readonly domain: string = "github.com";
   private static readonly scopeActivity: ProtectionScopeActivities = "uploadText";
+  private static readonly appName = "GitHub";
+  private static readonly appVersion = "0.0.1";
+  private static readonly correlationIdSuffix = "@GA";
   
   constructor(private readonly config: ActionConfig) {
     this.logger = new Logger('PayloadBuilder');
@@ -21,9 +24,9 @@ export class PayloadBuilder {
         }
       ],
       integratedAppMetadata: {
-            name: "Github",
-            version: "0.0.1",
-          },
+        name: PayloadBuilder.appName,
+        version: PayloadBuilder.appVersion,
+      },
     };
 
     return request;
@@ -236,7 +239,7 @@ export class PayloadBuilder {
 
   buildUploadSignalRequest(files: FileMetadata[], prInfo: PrInfo): UploadSignalRequest[] {
     const requests: UploadSignalRequest[] = [];
-    const conversationId = crypto.randomUUID()+ '@GA';
+    const conversationId = crypto.randomUUID() + PayloadBuilder.correlationIdSuffix;
     let seqNum = 0;
 
     for (const file of files) {
@@ -251,7 +254,7 @@ export class PayloadBuilder {
 
       if (singleSize <= this.maxPayloadSize) {
         requests.push({
-          id: crypto.randomUUID()+ '@GA',
+          id: crypto.randomUUID() + PayloadBuilder.correlationIdSuffix,
           userId,
           userEmail,
           scopeIdentifier: "",
@@ -268,7 +271,7 @@ export class PayloadBuilder {
           const isLastChunk = i + maxContentPerChunk >= content.length;
           const chunkCTP = this.createContentToProcess(file, conversationId, seqNum, !isLastChunk, chunk);
           requests.push({
-            id: crypto.randomUUID()+ '@GA',
+            id: crypto.randomUUID() + PayloadBuilder.correlationIdSuffix,
             userId,
             userEmail,
             scopeIdentifier: "",
@@ -285,7 +288,7 @@ export class PayloadBuilder {
 
   buildProcessContentBatchRequest(files: FileMetadata[]): ProcessContentBatchRequest[] {
     const allItems: ProcessContentRequestItem[] = [];
-    const conversationId = crypto.randomUUID()+ '@GA';
+    const conversationId = crypto.randomUUID() + PayloadBuilder.correlationIdSuffix;
     let seqNum = 0;
 
     for (const file of files) {
@@ -360,37 +363,174 @@ export class PayloadBuilder {
       data: contentOverride ?? file.content ?? `File: ${file.path} (${file.size} bytes)`
     };
 
+    const agents: AiAgentInfo[] = [];
+    if (file.committerId || file.committerEmail) {
+      agents.push({
+        identifier: file.committerId || file.committerEmail || '',
+        name: file.committerLogin || file.committerEmail || undefined,
+      });
+    }
+
+    const entry: ProcessConversationMetadata = {
+      "@odata.type": "microsoft.graph.processConversationMetadata",
+      identifier: file.path,
+      name: file.path,
+      correlationId: conversationId,
+      sequenceNumber: messageId,
+      length: file.size,
+      isTruncated,
+      createdDateTime: now,
+      modifiedDateTime: now,
+      content: fileContent,
+      ...(agents.length > 0 ? { agents } : {}),
+    };
+
     return {
-      contentEntries: [
-        {
-          "@odata.type": "microsoft.graph.processConversationMetadata",
-          identifier: file.path,
-          name: file.path,
-          correlationId: conversationId,
-          sequenceNumber: messageId,
-          length: file.size,
-          isTruncated,
-          createdDateTime: now,
-          modifiedDateTime: now,
-          content: fileContent
-        }
-      ],
+      contentEntries: [entry],
       activityMetadata: {
         activity: Activity.uploadText,
       },
       deviceMetadata: {},
       integratedAppMetadata: {
-        name: "Github",
-        version: "0.0.1",
+        name: PayloadBuilder.appName,
+        version: PayloadBuilder.appVersion,
       },
       protectedAppMetadata: {
-        name: "Github",
-        version: "0.0.1",
+        name: PayloadBuilder.appName,
+        version: PayloadBuilder.appVersion,
         applicationLocation: {
           "@odata.type": "microsoft.graph.policyLocationDomain",
           value: `https://${PayloadBuilder.domain}`
         }
       }
+    };
+  }
+
+  /**
+   * Build the text content representing a git commit's metadata.
+   */
+  private buildCommitContentText(commitGroup: CommitFiles): string {
+    const lines: string[] = [
+      `Commit: ${commitGroup.sha}`,
+    ];
+
+    if (commitGroup.message) {
+      lines.push(`Message: ${commitGroup.message}`);
+    }
+    if (commitGroup.authorName || commitGroup.authorEmail) {
+      lines.push(`Author: ${commitGroup.authorName || ''} <${commitGroup.authorEmail || ''}>`);
+    }
+    if (commitGroup.committerName || commitGroup.committerEmail) {
+      lines.push(`Committer: ${commitGroup.committerName || ''} <${commitGroup.committerEmail || ''}>`);
+    }
+    if (commitGroup.timestamp) {
+      lines.push(`Date: ${commitGroup.timestamp}`);
+    }
+
+    if (commitGroup.files.length > 0) {
+      lines.push('', 'Changed files:');
+      for (const file of commitGroup.files) {
+        const changeType = file.typeOfChange || 'modified';
+        const additions = file.numberOfAdditions ?? 0;
+        const deletions = file.numberOfDeletions ?? 0;
+        lines.push(`  ${changeType}: ${file.path} (+${additions} -${deletions})`);
+      }
+    }
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Build a ContentToProcess for a git commit (commit-level metadata request).
+   */
+  buildCommitContentToProcess(commitGroup: CommitFiles, conversationId: string, sequenceNumber: number): ContentToProcess {
+    const now = new Date().toISOString();
+    const commitContent = this.buildCommitContentText(commitGroup);
+    const commitIdentifier = `commit:${commitGroup.sha}`;
+
+    const fileContent: TextContent = {
+      "@odata.type": "microsoft.graph.textContent",
+      data: commitContent,
+    };
+
+    const agents: AiAgentInfo[] = [];
+    if (commitGroup.committerId || commitGroup.committerEmail) {
+      agents.push({
+        identifier: commitGroup.committerId || commitGroup.committerEmail || '',
+        name: commitGroup.committerLogin || commitGroup.committerEmail || undefined,
+      });
+    }
+
+    const entry: ProcessConversationMetadata = {
+      "@odata.type": "microsoft.graph.processConversationMetadata",
+      identifier: commitIdentifier,
+      name: commitIdentifier,
+      correlationId: conversationId,
+      sequenceNumber,
+      length: commitContent.length,
+      isTruncated: false,
+      createdDateTime: commitGroup.timestamp || now,
+      modifiedDateTime: commitGroup.timestamp || now,
+      content: fileContent,
+      ...(agents.length > 0 ? { agents } : {}),
+    };
+
+    return {
+      contentEntries: [entry],
+      activityMetadata: {
+        activity: Activity.uploadText,
+      },
+      deviceMetadata: {},
+      integratedAppMetadata: {
+        name: PayloadBuilder.appName,
+        version: PayloadBuilder.appVersion,
+      },
+      protectedAppMetadata: {
+        name: PayloadBuilder.appName,
+        version: PayloadBuilder.appVersion,
+        applicationLocation: {
+          "@odata.type": "microsoft.graph.policyLocationDomain",
+          value: `https://${PayloadBuilder.domain}`,
+        },
+      },
+    };
+  }
+
+  /**
+   * Build a per-user ProcessContentRequest for a git commit (inline PC).
+   */
+  buildCommitProcessContentRequest(commitGroup: CommitFiles, conversationId: string, sequenceNumber: number): ProcessContentRequest {
+    const ctp = this.buildCommitContentToProcess(commitGroup, conversationId, sequenceNumber);
+    return { contentToProcess: ctp };
+  }
+
+  /**
+   * Build an UploadSignalRequest for a git commit (contentActivities fallback).
+   */
+  buildCommitUploadSignalRequest(commitGroup: CommitFiles, prInfo: PrInfo): UploadSignalRequest {
+    const conversationId = crypto.randomUUID() + PayloadBuilder.correlationIdSuffix;
+    const ctp = this.buildCommitContentToProcess(commitGroup, conversationId, 0);
+    const userId = commitGroup.authorId || this.config.userId;
+    const userEmail = commitGroup.authorEmail || prInfo.authorEmail;
+
+    return {
+      id: crypto.randomUUID() + PayloadBuilder.correlationIdSuffix,
+      userId,
+      userEmail,
+      scopeIdentifier: "",
+      contentMetadata: ctp,
+    };
+  }
+
+  /**
+   * Build a ProcessContentBatchRequest item for a git commit (PCA batch).
+   */
+  buildCommitProcessContentBatchItem(commitGroup: CommitFiles, conversationId: string, sequenceNumber: number): ProcessContentRequestItem {
+    const ctp = this.buildCommitContentToProcess(commitGroup, conversationId, sequenceNumber);
+    return {
+      contentToProcess: ctp,
+      userId: commitGroup.authorId || this.config.userId,
+      requestId: crypto.randomUUID(),
     };
   }
 

@@ -1,5 +1,5 @@
 import * as github from '@actions/github';
-import { ActionConfig, FileMetadata, StateTrackingInfo, ApiResponse, ProtectionScopesResponse } from '../config/types';
+import { ActionConfig, FileMetadata, StateTrackingInfo, ApiResponse, ProtectionScopesResponse, PrInfo, ProtectionScopesRequest } from '../config/types';
 import { FileProcessor } from '../file/fileProcessor';
 import { PurviewClient } from '../api/purviewClient';
 import { PayloadBuilder } from '../payload/payloadBuilder';
@@ -101,7 +101,7 @@ export class FullScanService {
   async performFullScan(
     stateInfo: StateTrackingInfo | undefined,
     failedPayloads: string[],
-    prInfo: any,
+    prInfo: PrInfo,
     userPsDeniedCache: Set<string>,
     userPsCache: Map<string, ApiResponse<ProtectionScopesResponse>>
   ): Promise<number> {
@@ -312,9 +312,9 @@ export class FullScanService {
 
   private async processFilesByUser(
     allFiles: FileMetadata[],
-    prInfo: any,
+    prInfo: PrInfo,
     failedPayloads: string[],
-    psRequest: any,
+    psRequest: ProtectionScopesRequest,
     userPsDeniedCache: Set<string>,
     userPsCache: Map<string, ApiResponse<ProtectionScopesResponse>>
   ): Promise<void> {
@@ -399,7 +399,7 @@ export class FullScanService {
     }
   }
 
-  private async sendContentActivities(files: FileMetadata[], prInfo: any, failedPayloads: string[]): Promise<void> {
+  private async sendContentActivities(files: FileMetadata[], prInfo: PrInfo, failedPayloads: string[]): Promise<void> {
     const uploadRequests = this.payloadBuilder.buildUploadSignalRequest(files, prInfo);
     for (const req of uploadRequests) {
       const result = await this.purviewClient.uploadSignal(req);

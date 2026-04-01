@@ -9,7 +9,23 @@ export declare class GitHubActionsRunner {
     private readonly fullScanService;
     constructor(config: ActionConfig);
     execute(): Promise<void>;
+    private processDiffPath;
+    private processCommitGroup;
+    private processUserFiles;
+    private processFilesInline;
+    private processFilesOffline;
+    /**
+     * Resolve user protection scopes using the cache. Returns the PS response
+     * and etag, or null if the caller should fall back to contentActivities.
+     */
+    private resolveUserPsWithCache;
+    /**
+     * Send a commit-level request through the same routing as file requests.
+     */
+    private sendCommitRequest;
     private sendContentActivities;
+    private sendCommitContentActivity;
+    private postBlockedFilesReview;
     private createSummary;
     /**
      * Paginates through successful workflow runs in batches of 3, checking each

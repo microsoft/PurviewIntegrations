@@ -329,24 +329,34 @@ export class FileProcessor {
     };
   }
 
-  private async getFilesForCommit(commitSha: string, userId: string | undefined): Promise<FileMetadata[]> {
+  private async getFilesForCommit(commitSha: string, authorId: string | undefined, committerId: string | undefined): Promise<CommitFiles> {
     const { data: commit } = await this.octokit.rest.repos.getCommit({
       owner: this.config.repository.owner,
       repo: this.config.repository.repo,
       ref: commitSha
     });
 
+    const commitMeta: CommitFiles = {
+      sha: commit.sha,
+      files: [],
+      message: commit.commit.message || undefined,
+      authorEmail: commit.commit.author?.email || undefined,
+      authorLogin: commit.author?.login || undefined,
+      authorName: commit.commit.author?.name || undefined,
+      authorId,
+      committerEmail: commit.commit.committer?.email || undefined,
+      committerLogin: commit.committer?.login || undefined,
+      committerName: commit.commit.committer?.name || undefined,
+      committerId,
+      timestamp: commit.commit.author?.date || commit.commit.committer?.date || undefined,
+    };
+
     if (!commit.files || commit.files.length === 0) {
       this.logger.warn(`No files found in commit: ${commit.sha}`);
-      return [];
+      return commitMeta;
     }
 
     this.logger.info(`Processing commit ${commit.sha} with ${commit.files.length} changed file(s).`);
-
-    let fileMetadata: FileMetadata[] = [];
-
-    const token = await this.authService.getToken();
-    this.purviewClient.setAuthToken(token.accessToken);
 
     const filteredCommitFiles = commit.files!.filter((f: CommitFile) => this.shouldIncludePath(f.filename));
 
@@ -370,7 +380,7 @@ export class FileProcessor {
         }
       }
 
-      const metadata = {
+      const metadata: FileMetadata = {
         path: file.filename,
         size: fileSize,
         encoding: 'utf-8',
@@ -378,17 +388,20 @@ export class FileProcessor {
         content: fileContent,
         authorLogin: commit.author?.login || commit.committer?.login || null,
         authorEmail: commit.commit.author?.email || commit.commit.committer?.email || null,
-        authorId: userId,
+        authorId,
+        committerLogin: commit.committer?.login || commit.author?.login || null,
+        committerEmail: commit.commit.committer?.email || commit.commit.author?.email || null,
+        committerId,
         numberOfDeletions: file.deletions,
         numberOfAdditions: file.additions,
         numberOfChanges: file.changes,
         typeOfChange: file.status,
         commitTimestamp: commit.commit.author?.date || commit.commit.committer?.date
-      }
-      fileMetadata.push(metadata);
+      };
+      commitMeta.files.push(metadata);
     }
 
-    return fileMetadata;
+    return commitMeta;
   }
 
   /**
@@ -636,9 +649,11 @@ export class FileProcessor {
     // Commits list should be populated for push events
     if (commits && commits.length > 0) {
       this.logger.info(`Found ${commits.length} commits in push event.`);
-      const commitInfos: CommitInfo[] = commits.map((commit: { id: string; author: { email: any; }; committer: { email: any; }; }) => ({
+      const commitInfos: CommitInfo[] = commits.map((commit: { id: string; message?: string; author: { email: any; }; committer: { email: any; }; }) => ({
         sha: commit.id,
         email: commit.author?.email || commit.committer?.email || undefined,
+        committerEmail: commit.committer?.email || undefined,
+        message: commit.message || undefined,
       }));
       return commitInfos;
     }
@@ -662,7 +677,9 @@ export class FileProcessor {
 
       const commitInfos: CommitInfo[] = comparison.commits.map((commit: CommitData) => ({
         sha: commit.sha,
-        email: commit.commit.author?.email || commit.commit.committer?.email || undefined
+        email: commit.commit.author?.email || commit.commit.committer?.email || undefined,
+        committerEmail: commit.commit.committer?.email || undefined,
+        message: commit.commit.message || undefined,
       }));
 
       return commitInfos;
@@ -688,15 +705,17 @@ export class FileProcessor {
 
     const commitInfos: CommitInfo[] = commits.map((commit: PullRequestCommit) => ({
       sha: commit.sha,
-      email: commit.commit.author?.email || commit.commit.committer?.email || undefined
+      email: commit.commit.author?.email || commit.commit.committer?.email || undefined,
+      committerEmail: commit.commit.committer?.email || undefined,
+      message: commit.commit.message || undefined,
     }));
 
     this.logger.info(`Found ${commitInfos.length} total commit(s) in PR #${pr.number}`);
     return commitInfos;
   }
 
-  async getFilesGroupedByCommit(lastProcessedHeadSha?: string | null): Promise<CommitFiles[]> {
-    const allCommits = await this.getCommits();
+  async getFilesGroupedByCommit(lastProcessedHeadSha?: string | null, prefetchedCommits?: CommitInfo[]): Promise<CommitFiles[]> {
+    const allCommits = prefetchedCommits ?? await this.getCommits();
 
     // Find commits to process by skipping everything up to and including lastProcessedHeadSha
     let commitsToProcess = allCommits;
@@ -715,14 +734,17 @@ export class FileProcessor {
       return [];
     }
 
-    // Resolve all author emails to user IDs up front
-    const commitAuthorEmails: Set<string> = new Set();
+    // Resolve all author and committer emails to user IDs up front
+    const allEmails: Set<string> = new Set();
     for (const commit of commitsToProcess) {
       if (commit.email) {
-        commitAuthorEmails.add(commit.email.toLowerCase());
+        allEmails.add(commit.email.toLowerCase());
+      }
+      if (commit.committerEmail) {
+        allEmails.add(commit.committerEmail.toLowerCase());
       }
     }
-    const userIdMap = await this.resolveUserIds(commitAuthorEmails);
+    const userIdMap = await this.resolveUserIds(allEmails);
 
     const result: CommitFiles[] = [];
     for (const commit of commitsToProcess) {
@@ -731,8 +753,12 @@ export class FileProcessor {
       if (commit.email) {
         userId = userIdMap[commit.email.toLowerCase()] || this.config.userId;
       }
-      const files = await this.getFilesForCommit(commit.sha, userId);
-      result.push({ sha: commit.sha, files });
+      let committerId: string | undefined;
+      if (commit.committerEmail) {
+        committerId = userIdMap[commit.committerEmail.toLowerCase()] || this.config.userId;
+      }
+      const commitFiles = await this.getFilesForCommit(commit.sha, userId, committerId);
+      result.push(commitFiles);
     }
 
     return result;
