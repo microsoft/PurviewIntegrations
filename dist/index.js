@@ -62126,18 +62126,26 @@ class PurviewClient {
         }
     }
     async sendRequest(endpoint, payload = null, method = "POST", additionalHeaders = {}, operationName = 'Unknown') {
+        const requestId = this.generateRequestId();
         const headers = {
             'Authorization': `Bearer ${this.authToken}`,
             'Content-Type': 'application/json',
-            'X-Request-Id': this.generateRequestId(),
+            'X-Request-Id': requestId,
             'User-Agent': 'PurviewGitHubAction/1.0',
             ...additionalHeaders
         };
         this.logger.startGroup('Purview API Request');
-        this.logger.debug('Sending request', {
+        this.logger.debug(`[${operationName}] Request`, {
             endpoint: this.sanitizeEndpoint(endpoint),
-            payloadSize: JSON.stringify(payload).length
+            method,
+            requestId,
+            additionalHeaders: Object.keys(additionalHeaders),
         });
+        if (payload) {
+            this.logger.debug(`[${operationName}] Request payload`, {
+                payload: JSON.parse(JSON.stringify(JSON.parse(payload), this.jsonReplacer)),
+            });
+        }
         try {
             const response = await fetch(endpoint, {
                 method: method,
@@ -62145,13 +62153,18 @@ class PurviewClient {
                 body: payload
             });
             const responseText = await response.text();
-            const requestId = response.headers.get('client-request-id');
-            this.logger.info(`[${operationName}] Received response with status: ${response.status}, correlation ID: ${requestId}`);
+            const correlationId = response.headers.get('client-request-id');
+            this.logger.info(`[${operationName}] Received response with status: ${response.status}, correlation ID: ${correlationId}`);
             if (!response.ok) {
+                this.logger.debug(`[${operationName}] Error response body`, {
+                    status: response.status,
+                    correlationId,
+                    body: this.sanitizeErrorResponse(responseText),
+                });
                 this.logger.error('API request failed', {
                     status: response.status,
                     statusText: response.statusText,
-                    correlationId: requestId,
+                    correlationId,
                     response: this.sanitizeErrorResponse(responseText)
                 });
                 // Handle specific error cases
@@ -62171,6 +62184,12 @@ class PurviewClient {
             try {
                 const data = responseText ? JSON.parse(responseText) : {};
                 const etag = response.headers.get('etag')?.replace(/"/g, '') || undefined;
+                this.logger.debug(`[${operationName}] Response payload`, {
+                    statusCode: response.status,
+                    etag,
+                    correlationId,
+                    data: JSON.parse(JSON.stringify(data, this.jsonReplacer)),
+                });
                 this.logger.endGroup();
                 return {
                     success: true,
@@ -64005,7 +64024,7 @@ class GitHubActionsRunner {
             this.logger.info('Authenticating with Azure');
             const token = await this.authService.getToken();
             this.purviewClient.setAuthToken(token.accessToken);
-            // Step 3: Get PR info
+            // Step 3: Get event context info
             this.logger.info('Processing repository files');
             const prInfo = await this.fileProcessor.getPrInfo();
             const failedPayloads = [];
@@ -64022,13 +64041,13 @@ class GitHubActionsRunner {
                 }
                 fullScanFileCount = await this.fullScanService.performFullScan(stateInfo, failedPayloads, prInfo, userPsDeniedCache, userPsCache);
             }
-            // ─── PR Diff Path (skip if manually triggered) ───
+            // ─── Diff Path (skip if manually triggered) ───
             let diffFileCount = 0;
             if (!isManualDispatch) {
                 diffFileCount = await this.processDiffPath(prInfo, failedPayloads, blockedFiles, userPsDeniedCache, userPsCache);
             }
             else {
-                this.logger.info('Skipping PR diff processing (manually triggered workflow)');
+                this.logger.info('Skipping diff processing (manually triggered workflow)');
             }
             // ─── Outputs & Summary ───
             const totalProcessed = fullScanFileCount + diffFileCount;
@@ -64052,13 +64071,13 @@ class GitHubActionsRunner {
     //  Diff path orchestration
     // ──────────────────────────────────────────────────────────────────
     async processDiffPath(prInfo, failedPayloads, blockedFiles, userPsDeniedCache, userPsCache) {
-        this.logger.info('Running PR diff flow');
+        this.logger.info(`Running diff flow for ${github_context.eventName} event`);
         const allCommits = await this.fileProcessor.getCommits();
         const commitShaSet = new Set(allCommits.map(c => c.sha));
         const lastProcessedSha = await this.findLastProcessedCommitSha(commitShaSet);
         const commitGroups = await this.fileProcessor.getFilesGroupedByCommit(lastProcessedSha, allCommits);
         if (commitGroups.length === 0) {
-            this.logger.warn('No new commits to process for PR diff');
+            this.logger.warn('No new commits to process');
             return 0;
         }
         const psRequest = this.payloadBuilder.buildProtectionScopesRequest();
@@ -64075,9 +64094,9 @@ class GitHubActionsRunner {
         for (const commitGroup of commitGroups) {
             diffFileCount += await this.processCommitGroup(commitGroup, ctx);
         }
-        // Post PR review comment if any files were blocked
-        if (blockedFiles.length > 0 && prInfo.url) {
-            await this.postBlockedFilesReview(prInfo, blockedFiles);
+        // Post blocked files notification (PR review comment or commit comment)
+        if (blockedFiles.length > 0) {
+            await this.postBlockedFilesNotification(prInfo, blockedFiles);
         }
         return diffFileCount;
     }
@@ -64292,23 +64311,71 @@ class GitHubActionsRunner {
             failedPayloads.push(`ca-commit-${commitGroup.sha}`);
         }
     }
-    async postBlockedFilesReview(prInfo, blockedFiles) {
-        this.logger.info(`${blockedFiles.length} file(s) blocked, posting PR review comment`);
+    /**
+     * Post a notification about blocked files — PR review comment for pull_request
+     * events, commit comment for push events.
+     */
+    async postBlockedFilesNotification(_prInfo, blockedFiles) {
+        this.logger.info(`${blockedFiles.length} file(s) blocked, posting notification`);
         try {
             const githubToken = process.env['GITHUB_TOKEN'] || '';
-            const prNumber = parseInt(prInfo.url?.split('/').pop() || '0', 10);
-            if (githubToken && prNumber > 0) {
-                const octokit = getOctokit(githubToken);
-                const prCommentService = new PrCommentService(octokit, this.config.repository.owner, this.config.repository.repo, prNumber);
-                await prCommentService.postBlockedFilesReview(blockedFiles);
+            if (!githubToken) {
+                this.logger.warn('Cannot post blocked files notification: missing GITHUB_TOKEN');
+                return;
+            }
+            const octokit = getOctokit(githubToken);
+            if (github_context.eventName === 'pull_request') {
+                const prNumber = github_context.payload.pull_request?.number;
+                if (prNumber) {
+                    const prCommentService = new PrCommentService(octokit, this.config.repository.owner, this.config.repository.repo, prNumber);
+                    await prCommentService.postBlockedFilesReview(blockedFiles);
+                }
+                else {
+                    this.logger.warn('Cannot post PR comment: PR number not available');
+                }
+            }
+            else if (github_context.eventName === 'push') {
+                const commitSha = github_context.sha;
+                if (commitSha) {
+                    const body = this.formatBlockedFilesComment(blockedFiles);
+                    await octokit.rest.repos.createCommitComment({
+                        owner: this.config.repository.owner,
+                        repo: this.config.repository.repo,
+                        commit_sha: commitSha,
+                        body,
+                    });
+                    this.logger.info(`Commit comment posted on ${commitSha}`);
+                }
+                else {
+                    this.logger.warn('Cannot post commit comment: commit SHA not available');
+                }
             }
             else {
-                this.logger.warn('Cannot post PR comment: missing GITHUB_TOKEN or PR number');
+                this.logger.info('Blocked files notification skipped (unsupported event type for comments)');
             }
         }
         catch (e) {
-            this.logger.warn('Failed to post PR review comment (non-fatal).', { error: e });
+            this.logger.warn('Failed to post blocked files notification (non-fatal).', { error: e });
         }
+    }
+    formatBlockedFilesComment(blockedFiles) {
+        const lines = [
+            '## ⚠️ Purview Data Security — Blocked Content Detected',
+            '',
+            'The following file(s) were flagged by data security policies and **blocked**:',
+            '',
+            '| File | Policy | Action |',
+            '|------|--------|--------|',
+        ];
+        for (const bf of blockedFiles) {
+            for (const pa of bf.policyActions) {
+                const policy = pa.policyName || pa.policyId || 'Unknown';
+                const action = pa.restrictionAction || pa.action;
+                lines.push(`| \`${bf.filePath}\` | ${policy} | ${action} |`);
+            }
+        }
+        lines.push('', '> This comment was generated by the Purview GitHub Action.');
+        return lines.join('\n');
     }
     async createSummary(processed, failed, blocked = []) {
         const summary = summary_summary
@@ -64368,8 +64435,14 @@ class GitHubActionsRunner {
                 this.logger.info('Could not resolve workflow ID from current run — skipping commit dedup');
                 return null;
             }
-            // Scope to the PR head branch if available
-            const branch = github_context.payload.pull_request?.['head']?.ref;
+            // Scope to the current branch for more precise commit dedup
+            let branch;
+            if (github_context.eventName === 'pull_request') {
+                branch = github_context.payload.pull_request?.['head']?.ref;
+            }
+            else if (github_context.eventName === 'push') {
+                branch = github_context.ref?.replace('refs/heads/', '');
+            }
             // Use listWorkflowRunsForRepo (not listWorkflowRuns) because in
             // cross-repo reusable-workflow setups the numeric workflow_id returned
             // by getWorkflowRun belongs to the *external* workflow-definition repo,

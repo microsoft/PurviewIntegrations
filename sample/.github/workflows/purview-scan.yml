@@ -1,8 +1,10 @@
 name: Purview Scan
 
 on:
+  push:
+    branches: [$default-branch]
   pull_request:
-    branches: [main]
+    branches: [$default-branch]
   workflow_dispatch:
 
 permissions:

@@ -1,10 +1,10 @@
 ```mermaid
 flowchart TD
-    trigger[GitHub Action Triggered] --> validate[Validate Inputs<br/>validateInputs → config]
+    trigger[GitHub Action Triggered<br/>push / pull_request / workflow_dispatch] --> validate[Validate Inputs<br/>validateInputs → config]
     validate --> stateSetup[State Tracking Setup<br/>resolve workflow repo, branch,<br/>detect first run via state file<br/>or workflow history]
     stateSetup --> authenticate[Authenticate → MSAL Token]
-    authenticate --> getPrInfo[Get PR Info]
-    getPrInfo --> isFirstRun{First Run or<br/>Manual Dispatch?}
+    authenticate --> getEventCtx[Get Event Context Info<br/>getPrInfo: push / PR / dispatch<br/>author, branch, title, url]
+    getEventCtx --> isFirstRun{First Run or<br/>Manual Dispatch?}
 
     %% ── Full Scan Path (first run or manual dispatch) ──
     isFirstRun -->|Yes| getAllFiles[Get ALL repo files<br/>getAllRepoFiles<br/>binary files auto-skipped]
@@ -37,40 +37,31 @@ flowchart TD
     fullPCADone --> writeState
     writeState[Write state marker<br/>best-effort]
     writeState --> isManualDispatch{Manual Dispatch?}
-    isManualDispatch -->|Yes| skipDiff[Log: skipping PR diff]
+    isManualDispatch -->|Yes| skipDiff[Log: skipping diff processing]
     isManualDispatch -->|No| getCommits
     noFilesLog --> isManualDispatch
 
-    %% ── PR Diff Path (skipped on manual dispatch) ──
+    %% ── Diff Path (push & pull_request — skipped on manual dispatch) ──
     isFirstRun -->|No| getCommits
     getCommits[Get commits<br/>push payload / PR commits /<br/>compare API]
-    getCommits --> findLastProcessed[Find last processed commit<br/>paginate workflow run history<br/>match head_sha to commit list]
-    findLastProcessed --> getGroupedFiles[Get files grouped by commit<br/>getFilesGroupedByCommit<br/>skip already-processed commits<br/>resolve author emails → userIds<br/>via users.json + Graph API cache]
+    getCommits --> findLastProcessed[Find last processed commit<br/>paginate workflow run history<br/>match head_sha to commit list<br/>scoped by branch: PR head or push ref]
+    findLastProcessed --> getGroupedFiles[Get files grouped by commit<br/>getFilesGroupedByCommit<br/>skip already-processed commits<br/>resolve author + committer emails → userIds<br/>via users.json + Graph API cache]
     getGroupedFiles --> hasCommitGroups{New commits<br/>to process?}
     hasCommitGroups -->|No| noChangedFilesLog[Log: no new commits to process]
     hasCommitGroups -->|Yes| commitLoop
 
     subgraph PER_COMMIT_USER [For each commit → for each userId]
         commitLoop[Group commit files by userId<br/>authorId or config.userId]
-        commitLoop --> checkDeniedCache{userId in<br/>userPsDeniedCache?}
-        checkDeniedCache -->|Yes| diffUserFallback[Fallback: contentActivities<br/>uploadSignal for user's files]
-        checkDeniedCache -->|No| checkPsCache{userId in<br/>userPsCache?}
-        checkPsCache -->|Yes| useCachedPs[Use cached PS response]
-        checkPsCache -->|No| diffUserPS[Call searchUserProtectionScope<br/>POST /users/userId/.../protectionScopes/compute<br/>cache on success]
-        useCachedPs --> diffUserPSOk
-        diffUserPS --> diffUserPSOk{User PS success?}
-        diffUserPSOk -->|No / 401| diffIs401{401?}
-        diffIs401 -->|Yes| diffCache401[Cache userId in<br/>userPsDeniedCache]
-        diffCache401 --> diffUserFallback
-        diffIs401 -->|No| diffUserFallback
-        diffUserPSOk -->|Yes| diffUserHasScopes{User PS response has scopes?}
-        diffUserHasScopes -->|No / empty| diffNoScopesFallback[Route all files →<br/>contentActivities<br/>uploadSignal per file]
-        diffUserHasScopes -->|Yes| checkScopes[checkApplicableScopes<br/>activity match + location match]
+
+        commitLoop --> resolvePS[resolveUserPsWithCache<br/>check denied cache → PS cache →<br/>call searchUserProtectionScope<br/>cache 401s · cache success]
+        resolvePS --> psResolved{PS resolved?}
+        psResolved -->|No / denied / failed| diffUserFallback[Fallback: contentActivities<br/>uploadSignal for user's files]
+        psResolved -->|Yes| checkScopes[checkApplicableScopes<br/>activity match + location match]
         checkScopes --> shouldProcess{shouldProcess?}
-        shouldProcess -->|No| diffNoScopesFallback
+        shouldProcess -->|No| diffNoScopesFallback[Route all files →<br/>contentActivities<br/>uploadSignal per file]
         shouldProcess -->|Yes| execMode{executionMode?}
 
-        execMode -->|evaluateInline| processContent[Per-file: processContent<br/>POST /users/userId/.../processContent<br/>If-None-Match: etag<br/>Prefer: evaluateInline]
+        execMode -->|evaluateInline| processContent[Per-file: processContent<br/>POST /users/userId/.../processContent<br/>If-None-Match: etag<br/>Prefer: evaluateInline<br/>agents: committer AiAgentInfo]
         processContent --> pcOk{PC success?}
         pcOk -->|No| pcFallback[Fallback: contentActivities<br/>uploadSignal for file]
         pcOk -->|Yes| scopeState{protectionScopeState?}
@@ -83,13 +74,13 @@ flowchart TD
         isBlocked -->|Yes| addToBlocked[Add to blockedFiles]
         isBlocked -->|No| continueInline[Continue]
 
-        execMode -->|evaluateOffline| pcaBatch[PCA batch for user<br/>processContentAsync<br/>loop over chunked batches]
+        execMode -->|evaluateOffline| pcaBatch[PCA batch for user<br/>processContentAsync<br/>loop over chunked batches<br/>agents: committer AiAgentInfo]
         pcaBatch --> pcaBatchOk{PCA success?}
         pcaBatchOk -->|No| pcaBatchFallback[Fallback: contentActivities<br/>uploadSignal for user's files]
         pcaBatchOk -->|Yes| continueOffline[Continue]
     end
 
-    diffUserFallback --> nextUser[Next user / commit / done]
+    diffUserFallback --> nextUser[Next user / commit]
     diffNoScopesFallback --> nextUser
     pcFallback --> nextUser
     addToBlocked --> nextUser
@@ -98,10 +89,18 @@ flowchart TD
     pcaBatchFallback --> nextUser
     continueOffline --> nextUser
 
-    nextUser --> hasBlockedFiles{blockedFiles<br/>not empty?}
-    hasBlockedFiles -->|Yes| postPrComment[Post PR review comment<br/>pulls.createReview<br/>blocked file details table]
+    nextUser --> commitReq[Send commit-level request<br/>commit metadata + file list<br/>same routing: PS → inline/offline/fallback]
+    commitReq --> nextCommit[Next commit / done]
+
+    nextCommit --> hasBlockedFiles{blockedFiles<br/>not empty?}
+    hasBlockedFiles -->|Yes| eventType{Event type?}
     hasBlockedFiles -->|No| continueToOutputs[Continue]
+    eventType -->|pull_request| postPrComment[Post PR review comment<br/>pulls.createReview<br/>blocked file details table]
+    eventType -->|push| postCommitComment[Post commit comment<br/>repos.createCommitComment<br/>blocked file details table]
+    eventType -->|other| skipNotification[Skip notification]
     postPrComment --> continueToOutputs
+    postCommitComment --> continueToOutputs
+    skipNotification --> continueToOutputs
 
     noChangedFilesLog --> setOutputs
     skipDiff --> setOutputs
@@ -123,17 +122,21 @@ flowchart TD
     style pcaBatchFallback fill:#42a5f5,color:#fff
     style addToBlocked fill:#ef5350,color:#fff
     style postPrComment fill:#ef5350,color:#fff
+    style postCommitComment fill:#ef5350,color:#fff
     style actionFailed fill:#ef5350,color:#fff
     style fullCache401 fill:#ff9800,color:#000
     style diffCache401 fill:#ff9800,color:#000
+    style resolvePS fill:#ce93d8,color:#000
     style findLastProcessed fill:#ce93d8,color:#000
     style getGroupedFiles fill:#ce93d8,color:#000
+    style commitReq fill:#80cbc4,color:#000
 ```
 
 ### Legend
-- 🟣 **Purple** — Input validation, commit dedup & user resolution (Graph API / users.json)
-- 🟡 **Yellow** — processContent (PC) inline: synchronous, per-user, can detect blocks
-- 🟢 **Green** — processContentAsync (PCA) batch: fire-and-forget, chunked
+- 🟣 **Purple** — Shared helpers: `resolveUserPsWithCache`, commit dedup & user resolution (Graph API / users.json)
+- 🟡 **Yellow** — processContent (PC) inline: synchronous, per-user, can detect blocks; includes committer AiAgentInfo
+- 🟢 **Green** — processContentAsync (PCA) batch: fire-and-forget, chunked; includes committer AiAgentInfo
 - 🔵 **Blue** — contentActivities (uploadSignal): fire-and-forget, fallback on failures
-- 🔴 **Red** — Block detection, PR review comment & action failure
+- 🔴 **Red** — Block detection, blocked files notification (PR review comment or commit comment) & action failure
 - 🟠 **Orange** — 401 denial cache (skip user on subsequent calls)
+- 🩵 **Teal** — Commit-level request (commit metadata + changed file list, same PS routing as files)

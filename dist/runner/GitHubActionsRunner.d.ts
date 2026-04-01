@@ -25,7 +25,12 @@ export declare class GitHubActionsRunner {
     private sendCommitRequest;
     private sendContentActivities;
     private sendCommitContentActivity;
-    private postBlockedFilesReview;
+    /**
+     * Post a notification about blocked files — PR review comment for pull_request
+     * events, commit comment for push events.
+     */
+    private postBlockedFilesNotification;
+    private formatBlockedFilesComment;
     private createSummary;
     /**
      * Paginates through successful workflow runs in batches of 3, checking each

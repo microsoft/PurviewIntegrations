@@ -196,19 +196,27 @@ export class PurviewClient {
   }
 
   private async sendRequest(endpoint: string, payload: string | null = null, method: string = "POST", additionalHeaders: Record<string, string> = {}, operationName: string = 'Unknown'): Promise<ApiResponse> {
+    const requestId = this.generateRequestId();
     const headers: Record<string, string> = {
       'Authorization': `Bearer ${this.authToken}`,
       'Content-Type': 'application/json',
-      'X-Request-Id': this.generateRequestId(),
+      'X-Request-Id': requestId,
       'User-Agent': 'PurviewGitHubAction/1.0',
       ...additionalHeaders
     };
     
     this.logger.startGroup('Purview API Request');
-    this.logger.debug('Sending request', { 
-      endpoint: this.sanitizeEndpoint(endpoint), 
-      payloadSize: JSON.stringify(payload).length
+    this.logger.debug(`[${operationName}] Request`, { 
+      endpoint: this.sanitizeEndpoint(endpoint),
+      method,
+      requestId,
+      additionalHeaders: Object.keys(additionalHeaders),
     });
+    if (payload) {
+      this.logger.debug(`[${operationName}] Request payload`, {
+        payload: JSON.parse(JSON.stringify(JSON.parse(payload), this.jsonReplacer)),
+      });
+    }
     
     try {
       const response = await fetch(endpoint, {
@@ -218,14 +226,19 @@ export class PurviewClient {
       });
       
       const responseText = await response.text();
-      const requestId: string | null = response.headers.get('client-request-id');
-      this.logger.info(`[${operationName}] Received response with status: ${response.status}, correlation ID: ${requestId}`);
+      const correlationId: string | null = response.headers.get('client-request-id');
+      this.logger.info(`[${operationName}] Received response with status: ${response.status}, correlation ID: ${correlationId}`);
       
       if (!response.ok) {
+        this.logger.debug(`[${operationName}] Error response body`, {
+          status: response.status,
+          correlationId,
+          body: this.sanitizeErrorResponse(responseText),
+        });
         this.logger.error('API request failed', {
           status: response.status,
           statusText: response.statusText,
-          correlationId: requestId,
+          correlationId,
           response: this.sanitizeErrorResponse(responseText)
         });
         
@@ -249,6 +262,12 @@ export class PurviewClient {
       try {
         const data = responseText ? JSON.parse(responseText) : {};
         const etag = response.headers.get('etag')?.replace(/"/g, '') || undefined;
+        this.logger.debug(`[${operationName}] Response payload`, {
+          statusCode: response.status,
+          etag,
+          correlationId,
+          data: JSON.parse(JSON.stringify(data, this.jsonReplacer)),
+        });
         this.logger.endGroup();
         return {
           success: true,

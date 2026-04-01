@@ -35,7 +35,7 @@ export class GitHubActionsRunner {
             this.logger.info('Authenticating with Azure');
             const token = await this.authService.getToken();
             this.purviewClient.setAuthToken(token.accessToken);
-            // Step 3: Get PR info
+            // Step 3: Get event context info
             this.logger.info('Processing repository files');
             const prInfo = await this.fileProcessor.getPrInfo();
             const failedPayloads = [];
@@ -52,13 +52,13 @@ export class GitHubActionsRunner {
                 }
                 fullScanFileCount = await this.fullScanService.performFullScan(stateInfo, failedPayloads, prInfo, userPsDeniedCache, userPsCache);
             }
-            // ─── PR Diff Path (skip if manually triggered) ───
+            // ─── Diff Path (skip if manually triggered) ───
             let diffFileCount = 0;
             if (!isManualDispatch) {
                 diffFileCount = await this.processDiffPath(prInfo, failedPayloads, blockedFiles, userPsDeniedCache, userPsCache);
             }
             else {
-                this.logger.info('Skipping PR diff processing (manually triggered workflow)');
+                this.logger.info('Skipping diff processing (manually triggered workflow)');
             }
             // ─── Outputs & Summary ───
             const totalProcessed = fullScanFileCount + diffFileCount;
@@ -82,13 +82,13 @@ export class GitHubActionsRunner {
     //  Diff path orchestration
     // ──────────────────────────────────────────────────────────────────
     async processDiffPath(prInfo, failedPayloads, blockedFiles, userPsDeniedCache, userPsCache) {
-        this.logger.info('Running PR diff flow');
+        this.logger.info(`Running diff flow for ${github.context.eventName} event`);
         const allCommits = await this.fileProcessor.getCommits();
         const commitShaSet = new Set(allCommits.map(c => c.sha));
         const lastProcessedSha = await this.findLastProcessedCommitSha(commitShaSet);
         const commitGroups = await this.fileProcessor.getFilesGroupedByCommit(lastProcessedSha, allCommits);
         if (commitGroups.length === 0) {
-            this.logger.warn('No new commits to process for PR diff');
+            this.logger.warn('No new commits to process');
             return 0;
         }
         const psRequest = this.payloadBuilder.buildProtectionScopesRequest();
@@ -105,9 +105,9 @@ export class GitHubActionsRunner {
         for (const commitGroup of commitGroups) {
             diffFileCount += await this.processCommitGroup(commitGroup, ctx);
         }
-        // Post PR review comment if any files were blocked
-        if (blockedFiles.length > 0 && prInfo.url) {
-            await this.postBlockedFilesReview(prInfo, blockedFiles);
+        // Post blocked files notification (PR review comment or commit comment)
+        if (blockedFiles.length > 0) {
+            await this.postBlockedFilesNotification(prInfo, blockedFiles);
         }
         return diffFileCount;
     }
@@ -322,23 +322,71 @@ export class GitHubActionsRunner {
             failedPayloads.push(`ca-commit-${commitGroup.sha}`);
         }
     }
-    async postBlockedFilesReview(prInfo, blockedFiles) {
-        this.logger.info(`${blockedFiles.length} file(s) blocked, posting PR review comment`);
+    /**
+     * Post a notification about blocked files — PR review comment for pull_request
+     * events, commit comment for push events.
+     */
+    async postBlockedFilesNotification(_prInfo, blockedFiles) {
+        this.logger.info(`${blockedFiles.length} file(s) blocked, posting notification`);
         try {
             const githubToken = process.env['GITHUB_TOKEN'] || '';
-            const prNumber = parseInt(prInfo.url?.split('/').pop() || '0', 10);
-            if (githubToken && prNumber > 0) {
-                const octokit = github.getOctokit(githubToken);
-                const prCommentService = new PrCommentService(octokit, this.config.repository.owner, this.config.repository.repo, prNumber);
-                await prCommentService.postBlockedFilesReview(blockedFiles);
+            if (!githubToken) {
+                this.logger.warn('Cannot post blocked files notification: missing GITHUB_TOKEN');
+                return;
+            }
+            const octokit = github.getOctokit(githubToken);
+            if (github.context.eventName === 'pull_request') {
+                const prNumber = github.context.payload.pull_request?.number;
+                if (prNumber) {
+                    const prCommentService = new PrCommentService(octokit, this.config.repository.owner, this.config.repository.repo, prNumber);
+                    await prCommentService.postBlockedFilesReview(blockedFiles);
+                }
+                else {
+                    this.logger.warn('Cannot post PR comment: PR number not available');
+                }
+            }
+            else if (github.context.eventName === 'push') {
+                const commitSha = github.context.sha;
+                if (commitSha) {
+                    const body = this.formatBlockedFilesComment(blockedFiles);
+                    await octokit.rest.repos.createCommitComment({
+                        owner: this.config.repository.owner,
+                        repo: this.config.repository.repo,
+                        commit_sha: commitSha,
+                        body,
+                    });
+                    this.logger.info(`Commit comment posted on ${commitSha}`);
+                }
+                else {
+                    this.logger.warn('Cannot post commit comment: commit SHA not available');
+                }
             }
             else {
-                this.logger.warn('Cannot post PR comment: missing GITHUB_TOKEN or PR number');
+                this.logger.info('Blocked files notification skipped (unsupported event type for comments)');
             }
         }
         catch (e) {
-            this.logger.warn('Failed to post PR review comment (non-fatal).', { error: e });
+            this.logger.warn('Failed to post blocked files notification (non-fatal).', { error: e });
         }
+    }
+    formatBlockedFilesComment(blockedFiles) {
+        const lines = [
+            '## ⚠️ Purview Data Security — Blocked Content Detected',
+            '',
+            'The following file(s) were flagged by data security policies and **blocked**:',
+            '',
+            '| File | Policy | Action |',
+            '|------|--------|--------|',
+        ];
+        for (const bf of blockedFiles) {
+            for (const pa of bf.policyActions) {
+                const policy = pa.policyName || pa.policyId || 'Unknown';
+                const action = pa.restrictionAction || pa.action;
+                lines.push(`| \`${bf.filePath}\` | ${policy} | ${action} |`);
+            }
+        }
+        lines.push('', '> This comment was generated by the Purview GitHub Action.');
+        return lines.join('\n');
     }
     async createSummary(processed, failed, blocked = []) {
         const summary = core.summary
@@ -398,8 +446,14 @@ export class GitHubActionsRunner {
                 this.logger.info('Could not resolve workflow ID from current run — skipping commit dedup');
                 return null;
             }
-            // Scope to the PR head branch if available
-            const branch = github.context.payload.pull_request?.['head']?.ref;
+            // Scope to the current branch for more precise commit dedup
+            let branch;
+            if (github.context.eventName === 'pull_request') {
+                branch = github.context.payload.pull_request?.['head']?.ref;
+            }
+            else if (github.context.eventName === 'push') {
+                branch = github.context.ref?.replace('refs/heads/', '');
+            }
             // Use listWorkflowRunsForRepo (not listWorkflowRuns) because in
             // cross-repo reusable-workflow setups the numeric workflow_id returned
             // by getWorkflowRun belongs to the *external* workflow-definition repo,
