@@ -55,10 +55,10 @@ export class GitHubActionsRunner {
       const token = await this.authService.getToken();
       this.purviewClient.setAuthToken(token.accessToken);
       this.purviewClient.setTokenProvider(async () => {
-        this.authService.clearCache();
         const freshToken = await this.authService.getToken();
         return freshToken.accessToken;
       });
+      this.purviewClient.setTokenRefresh(() => this.authService.clearCache());
       
       // Step 3: Get event context info
       this.logger.info('Processing repository files');

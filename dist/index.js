@@ -61992,6 +61992,7 @@ class PurviewClient {
     retryHandler;
     authToken = null;
     tokenProvider = null;
+    tokenRefresh = null;
     baseUrl;
     constructor(config) {
         this.config = config;
@@ -62009,6 +62010,13 @@ class PurviewClient {
      */
     setTokenProvider(provider) {
         this.tokenProvider = provider;
+    }
+    /**
+     * Set a callback invoked before the 401-retry to invalidate any cached
+     * token so the next tokenProvider call fetches a genuinely new token.
+     */
+    setTokenRefresh(refresh) {
+        this.tokenRefresh = refresh;
     }
     async resolveAuthToken() {
         if (this.tokenProvider) {
@@ -62200,6 +62208,9 @@ class PurviewClient {
                     // If we have a token provider, clear the stale token and retry once
                     if (allowAuthRetry && this.tokenProvider) {
                         this.logger.info(`[${operationName}] 401 received — refreshing token and retrying`);
+                        if (this.tokenRefresh) {
+                            this.tokenRefresh();
+                        }
                         this.logger.endGroup();
                         return this.sendRequestInner(endpoint, payload, method, additionalHeaders, operationName, false);
                     }
@@ -64063,10 +64074,10 @@ class GitHubActionsRunner {
             const token = await this.authService.getToken();
             this.purviewClient.setAuthToken(token.accessToken);
             this.purviewClient.setTokenProvider(async () => {
-                this.authService.clearCache();
                 const freshToken = await this.authService.getToken();
                 return freshToken.accessToken;
             });
+            this.purviewClient.setTokenRefresh(() => this.authService.clearCache());
             // Step 3: Get event context info
             this.logger.info('Processing repository files');
             const prInfo = await this.fileProcessor.getPrInfo();

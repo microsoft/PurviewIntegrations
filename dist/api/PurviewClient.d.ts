@@ -5,6 +5,7 @@ export declare class PurviewClient {
     private readonly retryHandler;
     private authToken;
     private tokenProvider;
+    private tokenRefresh;
     private readonly baseUrl;
     constructor(config: ActionConfig);
     setAuthToken(token: string): void;
@@ -14,6 +15,11 @@ export declare class PurviewClient {
      * after a 401 to attempt a single token-refresh retry.
      */
     setTokenProvider(provider: () => Promise<string>): void;
+    /**
+     * Set a callback invoked before the 401-retry to invalidate any cached
+     * token so the next tokenProvider call fetches a genuinely new token.
+     */
+    setTokenRefresh(refresh: () => void): void;
     private resolveAuthToken;
     processContentAsync(payload: ProcessContentBatchRequest): Promise<ApiResponse>;
     processContent(userId: string, request: ProcessContentRequest, scopeIdentifier: string, inline?: boolean): Promise<ApiResponse<ProcessContentResponse>>;

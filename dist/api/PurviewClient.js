@@ -6,6 +6,7 @@ export class PurviewClient {
     retryHandler;
     authToken = null;
     tokenProvider = null;
+    tokenRefresh = null;
     baseUrl;
     constructor(config) {
         this.config = config;
@@ -23,6 +24,13 @@ export class PurviewClient {
      */
     setTokenProvider(provider) {
         this.tokenProvider = provider;
+    }
+    /**
+     * Set a callback invoked before the 401-retry to invalidate any cached
+     * token so the next tokenProvider call fetches a genuinely new token.
+     */
+    setTokenRefresh(refresh) {
+        this.tokenRefresh = refresh;
     }
     async resolveAuthToken() {
         if (this.tokenProvider) {
@@ -214,6 +222,9 @@ export class PurviewClient {
                     // If we have a token provider, clear the stale token and retry once
                     if (allowAuthRetry && this.tokenProvider) {
                         this.logger.info(`[${operationName}] 401 received — refreshing token and retrying`);
+                        if (this.tokenRefresh) {
+                            this.tokenRefresh();
+                        }
                         this.logger.endGroup();
                         return this.sendRequestInner(endpoint, payload, method, additionalHeaders, operationName, false);
                     }

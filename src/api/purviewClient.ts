@@ -7,6 +7,7 @@ export class PurviewClient {
   private readonly retryHandler: RetryHandler;
   private authToken: string | null = null;
   private tokenProvider: (() => Promise<string>) | null = null;
+  private tokenRefresh: (() => void) | null = null;
   private readonly baseUrl: string;
   
   constructor(private readonly config: ActionConfig) {
@@ -26,6 +27,14 @@ export class PurviewClient {
    */
   setTokenProvider(provider: () => Promise<string>): void {
     this.tokenProvider = provider;
+  }
+
+  /**
+   * Set a callback invoked before the 401-retry to invalidate any cached
+   * token so the next tokenProvider call fetches a genuinely new token.
+   */
+  setTokenRefresh(refresh: () => void): void {
+    this.tokenRefresh = refresh;
   }
 
   private async resolveAuthToken(): Promise<string> {
@@ -272,6 +281,9 @@ export class PurviewClient {
           // If we have a token provider, clear the stale token and retry once
           if (allowAuthRetry && this.tokenProvider) {
             this.logger.info(`[${operationName}] 401 received — refreshing token and retrying`);
+            if (this.tokenRefresh) {
+              this.tokenRefresh();
+            }
             this.logger.endGroup();
             return this.sendRequestInner(endpoint, payload, method, additionalHeaders, operationName, false);
           }
