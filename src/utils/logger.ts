@@ -65,10 +65,17 @@ export class Logger {
     try {
       // Remove sensitive information
       const sanitized = this.removeSensitiveData(data);
-      return JSON.stringify(sanitized, null, 2);
+      return JSON.stringify(sanitized, this.jsonReplacer, 2);
     } catch (error) {
       return '[Unable to serialize data]';
     }
+  }
+
+  private jsonReplacer(_key: string, value: any): any {
+    if (value instanceof Error) {
+      return { message: value.message, name: value.name, ...(value.stack ? { stack: value.stack } : {}) };
+    }
+    return value;
   }
   
   private removeSensitiveData(obj: any): any {

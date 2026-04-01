@@ -44,7 +44,9 @@ export async function validateInputs() {
         const apiTokenForUsersJson = stateRepoToken || process.env['GITHUB_TOKEN'] || '';
         if (isExternalWorkflowRepo && apiTokenForUsersJson) {
             // Fetch users.json from the workflow-definition repo via the GitHub API
-            logger.info(`Fetching users.json from workflow-definition repo ${workflowRepo.owner}/${workflowRepo.repo}`);
+            const tokenSource = stateRepoToken ? 'state-repo-token' : 'GITHUB_TOKEN';
+            const refLabel = workflowRepo.ref || '(default branch)';
+            logger.info(`Fetching users.json from workflow-definition repo ${workflowRepo.owner}/${workflowRepo.repo} (ref: ${refLabel}, token: ${tokenSource})`);
             const octokit = github.getOctokit(apiTokenForUsersJson);
             try {
                 const { data } = await octokit.rest.repos.getContent({
@@ -61,9 +63,15 @@ export async function validateInputs() {
                 logger.info(`Loaded users.json from ${workflowRepo.owner}/${workflowRepo.repo}/${usersJsonPath}`);
             }
             catch (e) {
+                if (e?.status === 401 || e?.status === 403) {
+                    throw new Error(`Authentication failed (HTTP ${e.status}) when fetching '${usersJsonPath}' from ${workflowRepo.owner}/${workflowRepo.repo}. ` +
+                        `The ${tokenSource} token does not have read access to this repository. ` +
+                        'Ensure your state-repo-token (PAT or GitHub App token) has "contents: read" permission on the workflow-definition repo.');
+                }
                 if (e?.status === 404) {
-                    throw new Error(`users.json not found at '${usersJsonPath}' in ${workflowRepo.owner}/${workflowRepo.repo}. ` +
-                        'Create a users.json in your workflow-definition repo with email-to-userId mappings and a defaultUserId.');
+                    throw new Error(`users.json not found at '${usersJsonPath}' in ${workflowRepo.owner}/${workflowRepo.repo} (ref: ${refLabel}). ` +
+                        `This can also happen when the ${tokenSource} token lacks read access to a private repo (GitHub returns 404 instead of 403). ` +
+                        'Verify that: (1) the file exists at the expected path and ref, and (2) your state-repo-token has "contents: read" permission on the workflow-definition repo.');
                 }
                 throw e;
             }

@@ -17,6 +17,7 @@ export declare class Logger {
     endGroup(): void;
     private formatMessage;
     private sanitizeData;
+    private jsonReplacer;
     private removeSensitiveData;
 }
 //# sourceMappingURL=logger.d.ts.map
