@@ -17,10 +17,12 @@ pnpm-debug.log*
 /node_modules
 
 # Build output
-# For MOST Node.js projects, you would ignore the build output directory.
-# However, for a GitHub Action packaged with ncc, the 'dist' directory
-# MUST be committed to the repository. Therefore, this line is commented out.
-# /dist
+# Only the ncc-bundled files are needed for the GitHub Action to run.
+# All other tsc output in dist/ is ignored.
+/dist/*
+!/dist/index.js
+!/dist/sourcemap-register.js
+!/dist/licenses.txt
 
 # TypeScript cache files
 # These files are used by the TypeScript compiler to speed up compilation.

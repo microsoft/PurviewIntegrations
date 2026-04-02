@@ -113,7 +113,7 @@ export class FullScanService {
         : 'State tracking disabled; scanning full repository.'
     );
 
-    const allFiles = await this.fileProcessor.getAllRepoFiles();
+    const allFiles = await this.fileProcessor.getAllRepoFiles(currentEventSha);
     const fullScanFileCount = allFiles.length;
 
     // Mark payloads as full-scan so AiAgentInfo uses email + "fullscan" version

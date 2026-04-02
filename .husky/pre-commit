@@ -14,10 +14,12 @@ npm test
 echo "🔨 Building dist/..."
 npm run build && npm run package
 
-# 3. Stage any dist/ changes so the commit includes the fresh build
-if ! git diff --quiet dist/; then
-  echo "📦 dist/ has changed — staging updated files..."
-  git add dist/
-else
-  echo "✅ dist/ is up-to-date."
-fi
+# 3. Stage only the bundled files needed by the action
+for f in dist/index.js dist/sourcemap-register.js dist/licenses.txt; do
+  if [ -f "$f" ] && ! git diff --quiet "$f" 2>/dev/null; then
+    echo "📦 $f has changed — staging..."
+    git add "$f"
+  fi
+done
+
+echo "✅ dist/ is up-to-date."

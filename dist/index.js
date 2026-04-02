@@ -62489,7 +62489,10 @@ class FileProcessor {
             throw error;
         }
     }
-    async getAllRepoFiles() {
+    async getAllRepoFiles(atRef) {
+        if (atRef) {
+            return this.getRepoFilesAtRef(atRef);
+        }
         const patterns = this.getGlobPatterns().join('\n');
         const globber = await create(patterns);
         const files = await globber.glob();
@@ -62545,6 +62548,78 @@ class FileProcessor {
                 file.authorId = userIdMap[authorEmail.toLowerCase()] || this.config.userId;
                 // For full-scan files the last commit author doubles as committer
                 // so that AiAgentInfo is populated in the payload.
+                file.committerEmail = file.committerEmail || authorEmail;
+                file.committerId = file.committerId || file.authorId;
+            }
+        }
+        return result;
+    }
+    /**
+     * List repository files at a specific git ref using `git ls-tree`.
+     * This avoids reading from the working tree which may include uncommitted
+     * or PR-only changes that shouldn't appear in the full scan.
+     */
+    async getRepoFilesAtRef(ref) {
+        const workspace = process.env['GITHUB_WORKSPACE'] || process.cwd();
+        let treeOutput;
+        try {
+            treeOutput = (0,external_child_process_namespaceObject.execSync)(`git ls-tree -r --long "${ref}"`, { cwd: workspace, encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 }).trim();
+        }
+        catch (e) {
+            this.logger.warn(`Failed to list files at ref ${ref}`, { error: e });
+            return [];
+        }
+        if (!treeOutput) {
+            return [];
+        }
+        const maxBytes = this.config.maxFileSize;
+        const result = [];
+        for (const line of treeOutput.split('\n')) {
+            // git ls-tree --long format: <mode> blob <sha> <size>\t<path>
+            const match = line.match(/^\d+ blob ([0-9a-f]+)\s+(\d+)\t(.+)$/);
+            if (!match)
+                continue;
+            const blobSha = match[1];
+            const size = parseInt(match[2], 10);
+            const filePath = match[3];
+            if (!this.shouldIncludePath(filePath))
+                continue;
+            if (size === 0)
+                continue;
+            if (size > maxBytes) {
+                this.logger.warn(`Skipping oversized file during full scan: ${filePath} (${size} bytes > ${maxBytes} bytes)`);
+                continue;
+            }
+            if (isBinaryPath(filePath)) {
+                this.logger.info(`Skipping binary file: ${filePath}`);
+                continue;
+            }
+            try {
+                const content = (0,external_child_process_namespaceObject.execSync)(`git cat-file -p ${blobSha}`, { cwd: workspace, encoding: 'utf-8', maxBuffer: maxBytes });
+                result.push({
+                    path: filePath,
+                    size,
+                    encoding: 'utf-8',
+                    sha: blobSha,
+                    content,
+                    typeOfChange: 'unknown',
+                    commitTimestamp: new Date().toISOString(),
+                });
+            }
+            catch (e) {
+                this.logger.warn(`Failed reading file at ${ref}: ${filePath}`, { error: e });
+            }
+        }
+        this.logger.info(`Full scan selected ${result.length} files after filtering (at ref ${ref}).`);
+        // --- Resolve author info for each file ---
+        const fileAuthorMap = this.getFileAuthorEmails(result);
+        const uniqueEmails = new Set(Object.values(fileAuthorMap).filter(Boolean));
+        const userIdMap = await this.resolveUserIds(uniqueEmails);
+        for (const file of result) {
+            const authorEmail = fileAuthorMap[file.path];
+            if (authorEmail) {
+                file.authorEmail = authorEmail;
+                file.authorId = userIdMap[authorEmail.toLowerCase()] || this.config.userId;
                 file.committerEmail = file.committerEmail || authorEmail;
                 file.committerId = file.committerId || file.authorId;
             }
@@ -63898,7 +63973,7 @@ class FullScanService {
         this.logger.info(stateInfo
             ? 'First run detected; scanning full repository.'
             : 'State tracking disabled; scanning full repository.');
-        const allFiles = await this.fileProcessor.getAllRepoFiles();
+        const allFiles = await this.fileProcessor.getAllRepoFiles(currentEventSha);
         const fullScanFileCount = allFiles.length;
         // Mark payloads as full-scan so AiAgentInfo uses email + "fullscan" version
         this.payloadBuilder.isFullScan = true;
