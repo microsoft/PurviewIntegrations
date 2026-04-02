@@ -62562,6 +62562,14 @@ class FileProcessor {
     async getRepoFilesAtRef(ref) {
         const workspace = process.env['GITHUB_WORKSPACE'] || process.cwd();
         let treeOutput;
+        // The ref may not be available in a shallow clone (e.g. PR base SHA).
+        // Fetch it so git ls-tree can resolve it.
+        try {
+            (0,external_child_process_namespaceObject.execSync)(`git fetch --depth=1 origin ${ref}`, { cwd: workspace, encoding: 'utf-8', timeout: 30000 });
+        }
+        catch {
+            // Already available locally — continue
+        }
         try {
             treeOutput = (0,external_child_process_namespaceObject.execSync)(`git ls-tree -r --long "${ref}"`, { cwd: workspace, encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 }).trim();
         }

@@ -257,6 +257,14 @@ export class FileProcessor {
     const workspace = process.env['GITHUB_WORKSPACE'] || process.cwd();
 
     let treeOutput: string;
+    // The ref may not be available in a shallow clone (e.g. PR base SHA).
+    // Fetch it so git ls-tree can resolve it.
+    try {
+      execSync(`git fetch --depth=1 origin ${ref}`, { cwd: workspace, encoding: 'utf-8', timeout: 30000 });
+    } catch {
+      // Already available locally — continue
+    }
+
     try {
       treeOutput = execSync(
         `git ls-tree -r --long "${ref}"`,
