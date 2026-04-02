@@ -62040,11 +62040,7 @@ class PurviewClient {
         }
         catch (error) {
             this.logger.error('Failed to process content asynchronously', { error });
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : 'Unknown error',
-                statusCode: error?.statusCode
-            };
+            return this.buildErrorResponse(error);
         }
     }
     async processContent(userId, request, scopeIdentifier, inline = true) {
@@ -62067,11 +62063,7 @@ class PurviewClient {
         }
         catch (error) {
             this.logger.error(`Failed to process content for user ${userId}`, { error });
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : 'Unknown error',
-                statusCode: error?.statusCode
-            };
+            return this.buildErrorResponse(error);
         }
     }
     async uploadSignal(payload) {
@@ -62087,10 +62079,7 @@ class PurviewClient {
         }
         catch (error) {
             this.logger.error('Failed to upload signal', { error });
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : 'Unknown error'
-            };
+            return this.buildErrorResponse(error);
         }
     }
     async searchTenantProtectionScope(payload) {
@@ -62108,11 +62097,7 @@ class PurviewClient {
         }
         catch (error) {
             this.logger.error('Failed to search tenant protection scope', { error });
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : 'Unknown error',
-                statusCode: error?.statusCode
-            };
+            return this.buildErrorResponse(error);
         }
     }
     async searchUserProtectionScope(userId, payload) {
@@ -62130,11 +62115,7 @@ class PurviewClient {
         }
         catch (error) {
             this.logger.error(`Failed to search protection scope for user ${userId}`, { error });
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : 'Unknown error',
-                statusCode: error?.statusCode
-            };
+            return this.buildErrorResponse(error);
         }
     }
     async getUserInfo(userEmails) {
@@ -62151,10 +62132,7 @@ class PurviewClient {
         }
         catch (error) {
             this.logger.error('Failed to get user info', { error });
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : 'Unknown error'
-            };
+            return this.buildErrorResponse(error);
         }
     }
     async sendRequest(endpoint, payload = null, method = "POST", additionalHeaders = {}, operationName = 'Unknown') {
@@ -62216,6 +62194,8 @@ class PurviewClient {
                     }
                     const err = new Error('Authentication failed. Token may be expired.');
                     err.statusCode = 401;
+                    err.correlationId = correlationId;
+                    err.responseBody = this.sanitizeErrorResponse(responseText);
                     throw err;
                 }
                 if (response.status === 429) {
@@ -62224,6 +62204,8 @@ class PurviewClient {
                 }
                 const err = new Error(`API request failed: ${response.status} - ${response.statusText}`);
                 err.statusCode = response.status;
+                err.correlationId = correlationId;
+                err.responseBody = this.sanitizeErrorResponse(responseText);
                 throw err;
             }
             try {
@@ -62264,6 +62246,19 @@ class PurviewClient {
             return value.substring(0, 100) + '... [truncated in logs]';
         }
         return value;
+    }
+    buildErrorResponse(error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        const statusCode = error?.statusCode;
+        const correlationId = error?.correlationId;
+        const responseBody = error?.responseBody;
+        return {
+            success: false,
+            error: message,
+            statusCode,
+            correlationId,
+            responseBody,
+        };
     }
     generateRequestId() {
         return `${this.config.repository.runId}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -63448,6 +63443,7 @@ class PayloadBuilder {
                     name: `${this.config.repository.repo}/${file.path}`,
                     url: fileUrl,
                     accessType: this.mapChangeTypeToAccessType(file.typeOfChange),
+                    status: 'success',
                 }],
             ...(agents.length > 0 ? { agents } : {}),
         };
@@ -63528,6 +63524,7 @@ class PayloadBuilder {
                 name: `${this.config.repository.repo}/${commitIdentifier}`,
                 url: commitUrl,
                 accessType: 'write',
+                status: 'success',
             }];
         for (const file of commitGroup.files) {
             accessedResources.push({
@@ -63535,6 +63532,7 @@ class PayloadBuilder {
                 name: `${this.config.repository.repo}/${file.path}`,
                 url: `${repoBaseUrl}/blob/${this.config.repository.branch}/${file.path}`,
                 accessType: this.mapChangeTypeToAccessType(file.typeOfChange),
+                status: 'success',
             });
         }
         const entry = {

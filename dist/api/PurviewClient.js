@@ -54,11 +54,7 @@ export class PurviewClient {
         }
         catch (error) {
             this.logger.error('Failed to process content asynchronously', { error });
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : 'Unknown error',
-                statusCode: error?.statusCode
-            };
+            return this.buildErrorResponse(error);
         }
     }
     async processContent(userId, request, scopeIdentifier, inline = true) {
@@ -81,11 +77,7 @@ export class PurviewClient {
         }
         catch (error) {
             this.logger.error(`Failed to process content for user ${userId}`, { error });
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : 'Unknown error',
-                statusCode: error?.statusCode
-            };
+            return this.buildErrorResponse(error);
         }
     }
     async uploadSignal(payload) {
@@ -101,10 +93,7 @@ export class PurviewClient {
         }
         catch (error) {
             this.logger.error('Failed to upload signal', { error });
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : 'Unknown error'
-            };
+            return this.buildErrorResponse(error);
         }
     }
     async searchTenantProtectionScope(payload) {
@@ -122,11 +111,7 @@ export class PurviewClient {
         }
         catch (error) {
             this.logger.error('Failed to search tenant protection scope', { error });
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : 'Unknown error',
-                statusCode: error?.statusCode
-            };
+            return this.buildErrorResponse(error);
         }
     }
     async searchUserProtectionScope(userId, payload) {
@@ -144,11 +129,7 @@ export class PurviewClient {
         }
         catch (error) {
             this.logger.error(`Failed to search protection scope for user ${userId}`, { error });
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : 'Unknown error',
-                statusCode: error?.statusCode
-            };
+            return this.buildErrorResponse(error);
         }
     }
     async getUserInfo(userEmails) {
@@ -165,10 +146,7 @@ export class PurviewClient {
         }
         catch (error) {
             this.logger.error('Failed to get user info', { error });
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : 'Unknown error'
-            };
+            return this.buildErrorResponse(error);
         }
     }
     async sendRequest(endpoint, payload = null, method = "POST", additionalHeaders = {}, operationName = 'Unknown') {
@@ -230,6 +208,8 @@ export class PurviewClient {
                     }
                     const err = new Error('Authentication failed. Token may be expired.');
                     err.statusCode = 401;
+                    err.correlationId = correlationId;
+                    err.responseBody = this.sanitizeErrorResponse(responseText);
                     throw err;
                 }
                 if (response.status === 429) {
@@ -238,6 +218,8 @@ export class PurviewClient {
                 }
                 const err = new Error(`API request failed: ${response.status} - ${response.statusText}`);
                 err.statusCode = response.status;
+                err.correlationId = correlationId;
+                err.responseBody = this.sanitizeErrorResponse(responseText);
                 throw err;
             }
             try {
@@ -278,6 +260,19 @@ export class PurviewClient {
             return value.substring(0, 100) + '... [truncated in logs]';
         }
         return value;
+    }
+    buildErrorResponse(error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        const statusCode = error?.statusCode;
+        const correlationId = error?.correlationId;
+        const responseBody = error?.responseBody;
+        return {
+            success: false,
+            error: message,
+            statusCode,
+            correlationId,
+            responseBody,
+        };
     }
     generateRequestId() {
         return `${this.config.repository.runId}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;

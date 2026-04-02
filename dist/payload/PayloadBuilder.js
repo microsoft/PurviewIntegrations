@@ -339,6 +339,7 @@ export class PayloadBuilder {
                     name: `${this.config.repository.repo}/${file.path}`,
                     url: fileUrl,
                     accessType: this.mapChangeTypeToAccessType(file.typeOfChange),
+                    status: 'success',
                 }],
             ...(agents.length > 0 ? { agents } : {}),
         };
@@ -419,6 +420,7 @@ export class PayloadBuilder {
                 name: `${this.config.repository.repo}/${commitIdentifier}`,
                 url: commitUrl,
                 accessType: 'write',
+                status: 'success',
             }];
         for (const file of commitGroup.files) {
             accessedResources.push({
@@ -426,6 +428,7 @@ export class PayloadBuilder {
                 name: `${this.config.repository.repo}/${file.path}`,
                 url: `${repoBaseUrl}/blob/${this.config.repository.branch}/${file.path}`,
                 accessType: this.mapChangeTypeToAccessType(file.typeOfChange),
+                status: 'success',
             });
         }
         const entry = {

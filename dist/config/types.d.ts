@@ -51,6 +51,8 @@ export interface ApiResponse<T = any> {
     error?: string;
     statusCode?: number;
     etag?: string;
+    correlationId?: string;
+    responseBody?: string;
 }
 export type Result<T, E = Error> = {
     success: true;
@@ -171,7 +173,7 @@ export interface AccessedResourceDetails {
     url?: string;
     labelId?: string;
     accessType?: ResourceAccessType;
-    status?: ResourceAccessStatus;
+    status: ResourceAccessStatus;
     isCrossPromptInjectionDetected?: boolean;
 }
 export type ResourceAccessType = "none" | "read" | "write" | "create" | "unknownFutureValue";

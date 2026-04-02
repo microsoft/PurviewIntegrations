@@ -93,6 +93,16 @@ describe('inputValidator', () => {
     expect(config.maxFileSize).toBe(10485760);
   });
 
+  it('always includes **/.git/** in excludePatterns even with custom patterns', async () => {
+    setupInputMocks({ 'exclude-patterns': '**/.git/**,dist/**' });
+    const config = await validateInputs();
+    expect(config.excludePatterns).toContain('**/.git/**');
+    expect(config.excludePatterns).toContain('dist/**');
+    // Should be deduplicated
+    const gitPatternCount = config.excludePatterns!.filter(p => p === '**/.git/**').length;
+    expect(gitPatternCount).toBe(1);
+  });
+
   it('throws on invalid client-id GUID', async () => {
     setupInputMocks({ 'client-id': 'not-a-guid' });
     await expect(validateInputs()).rejects.toThrow(/Invalid client-id/);

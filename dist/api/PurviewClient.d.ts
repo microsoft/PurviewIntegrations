@@ -30,6 +30,7 @@ export declare class PurviewClient {
     private sendRequest;
     private sendRequestInner;
     private jsonReplacer;
+    private buildErrorResponse;
     private generateRequestId;
     private sanitizeEndpoint;
     private sanitizeErrorResponse;

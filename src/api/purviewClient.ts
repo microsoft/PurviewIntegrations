@@ -66,11 +66,7 @@ export class PurviewClient {
       return result;
     } catch (error) {
       this.logger.error('Failed to process content asynchronously', { error });
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        statusCode: (error as any)?.statusCode
-      };
+      return this.buildErrorResponse(error);
     }
   }
 
@@ -101,11 +97,7 @@ export class PurviewClient {
       return result;
     } catch (error) {
       this.logger.error(`Failed to process content for user ${userId}`, { error });
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        statusCode: (error as any)?.statusCode
-      };
+      return this.buildErrorResponse(error);
     }
   }
 
@@ -128,10 +120,7 @@ export class PurviewClient {
       return result;
     } catch (error) {
       this.logger.error('Failed to upload signal', { error });
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error'
-      };
+      return this.buildErrorResponse(error);
     }
   }
 
@@ -157,11 +146,7 @@ export class PurviewClient {
       return result;
     } catch (error) {
       this.logger.error('Failed to search tenant protection scope', { error });
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        statusCode: (error as any)?.statusCode
-      };
+      return this.buildErrorResponse(error);
     }
   }
 
@@ -187,11 +172,7 @@ export class PurviewClient {
       return result;
     } catch (error) {
       this.logger.error(`Failed to search protection scope for user ${userId}`, { error });
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        statusCode: (error as any)?.statusCode
-      };
+      return this.buildErrorResponse(error);
     }
   }
 
@@ -217,10 +198,7 @@ export class PurviewClient {
       return result;
     } catch (error) {
       this.logger.error('Failed to get user info', { error });
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error'
-      };
+      return this.buildErrorResponse(error);
     }
   }
 
@@ -289,6 +267,8 @@ export class PurviewClient {
           }
           const err = new Error('Authentication failed. Token may be expired.');
           (err as any).statusCode = 401;
+          (err as any).correlationId = correlationId;
+          (err as any).responseBody = this.sanitizeErrorResponse(responseText);
           throw err;
         }
         
@@ -299,6 +279,8 @@ export class PurviewClient {
         
         const err = new Error(`API request failed: ${response.status} - ${response.statusText}`);
         (err as any).statusCode = response.status;
+        (err as any).correlationId = correlationId;
+        (err as any).responseBody = this.sanitizeErrorResponse(responseText);
         throw err;
       }
       
@@ -339,6 +321,20 @@ export class PurviewClient {
       return value.substring(0, 100) + '... [truncated in logs]';
     }
     return value;
+  }
+
+  private buildErrorResponse(error: unknown): ApiResponse {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    const statusCode = (error as any)?.statusCode as number | undefined;
+    const correlationId = (error as any)?.correlationId as string | undefined;
+    const responseBody = (error as any)?.responseBody as string | undefined;
+    return {
+      success: false,
+      error: message,
+      statusCode,
+      correlationId,
+      responseBody,
+    };
   }
   
   private generateRequestId(): string {
