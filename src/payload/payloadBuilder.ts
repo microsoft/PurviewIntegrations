@@ -12,9 +12,23 @@ export class PayloadBuilder {
 
   /** When true, agent version is set to "fullscan" instead of the defaultUserId. */
   public isFullScan = false;
+
+  /** PR number, set when processing a pull request event. */
+  public prNumber?: number;
   
   constructor(private readonly config: ActionConfig) {
     this.logger = new Logger('PayloadBuilder');
+  }
+
+  private buildResourceIdentifier(commitOrSha: string): string {
+    return this.prNumber != null
+      ? `PR: ${this.prNumber} Commit: ${commitOrSha}`
+      : `Commit: ${commitOrSha}`;
+  }
+
+  private buildFileResourceName(filePath: string): string {
+    const fileName = filePath.split('/').pop() || filePath;
+    return `Repo: ${this.config.repository.repo} File: ${fileName} Path: ${filePath}`;
   }
 
   buildProtectionScopesRequest(): ProtectionScopesRequest {
@@ -394,11 +408,12 @@ export class PayloadBuilder {
       modifiedDateTime: now,
       content: fileContent,
       accessedResources_v2: [{
-        identifier: file.sha || file.path,
-        name: `${this.config.repository.repo}/${file.path}`,
+        identifier: this.buildResourceIdentifier(file.sha || file.path),
+        name: this.buildFileResourceName(file.path),
         url: fileUrl,
         accessType: this.mapChangeTypeToAccessType(file.typeOfChange),
         status: 'success',
+        isCrossPromptInjectionDetected: false,
       }],
       ...(agents.length > 0 ? { agents } : {}),
     };
@@ -485,19 +500,21 @@ export class PayloadBuilder {
     const commitUrl = `${repoBaseUrl}/commit/${commitGroup.sha}`;
 
     const accessedResources: import('../config/types').AccessedResourceDetails[] = [{
-      identifier: commitGroup.sha,
-      name: `${this.config.repository.repo}/${commitIdentifier}`,
+      identifier: this.buildResourceIdentifier(commitGroup.sha),
+      name: `Repo: ${this.config.repository.repo} Commit: ${commitGroup.sha}`,
       url: commitUrl,
       accessType: 'write',
       status: 'success',
+      isCrossPromptInjectionDetected: false,
     }];
     for (const file of commitGroup.files) {
       accessedResources.push({
-        identifier: file.sha || file.path,
-        name: `${this.config.repository.repo}/${file.path}`,
+        identifier: this.buildResourceIdentifier(file.sha || file.path),
+        name: this.buildFileResourceName(file.path),
         url: `${repoBaseUrl}/blob/${this.config.repository.branch}/${file.path}`,
         accessType: this.mapChangeTypeToAccessType(file.typeOfChange),
         status: 'success',
+        isCrossPromptInjectionDetected: false,
       });
     }
 

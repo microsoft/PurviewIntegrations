@@ -63,6 +63,7 @@ export class GitHubActionsRunner {
       // Step 3: Get event context info
       this.logger.info('Processing repository files');
       const prInfo = await this.fileProcessor.getPrInfo();
+      this.payloadBuilder.prNumber = prInfo.prNumber;
 
       const failedPayloads: string[] = [];
       const blockedFiles: BlockedFileResult[] = [];

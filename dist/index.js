@@ -62683,6 +62683,7 @@ class FileProcessor {
             base: base,
             title: title,
             url: url,
+            prNumber: pr["number"],
         };
     }
     async getFilesForCommit(commitSha, authorId, committerId) {
@@ -63115,9 +63116,20 @@ class PayloadBuilder {
     static correlationIdSuffix = "@GA";
     /** When true, agent version is set to "fullscan" instead of the defaultUserId. */
     isFullScan = false;
+    /** PR number, set when processing a pull request event. */
+    prNumber;
     constructor(config) {
         this.config = config;
         this.logger = new logger_Logger('PayloadBuilder');
+    }
+    buildResourceIdentifier(commitOrSha) {
+        return this.prNumber != null
+            ? `PR: ${this.prNumber} Commit: ${commitOrSha}`
+            : `Commit: ${commitOrSha}`;
+    }
+    buildFileResourceName(filePath) {
+        const fileName = filePath.split('/').pop() || filePath;
+        return `Repo: ${this.config.repository.repo} File: ${fileName} Path: ${filePath}`;
     }
     buildProtectionScopesRequest() {
         const request = {
@@ -63439,11 +63451,12 @@ class PayloadBuilder {
             modifiedDateTime: now,
             content: fileContent,
             accessedResources_v2: [{
-                    identifier: file.sha || file.path,
-                    name: `${this.config.repository.repo}/${file.path}`,
+                    identifier: this.buildResourceIdentifier(file.sha || file.path),
+                    name: this.buildFileResourceName(file.path),
                     url: fileUrl,
                     accessType: this.mapChangeTypeToAccessType(file.typeOfChange),
                     status: 'success',
+                    isCrossPromptInjectionDetected: false,
                 }],
             ...(agents.length > 0 ? { agents } : {}),
         };
@@ -63520,19 +63533,21 @@ class PayloadBuilder {
         const repoBaseUrl = `https://${PayloadBuilder.domain}/${this.config.repository.owner}/${this.config.repository.repo}`;
         const commitUrl = `${repoBaseUrl}/commit/${commitGroup.sha}`;
         const accessedResources = [{
-                identifier: commitGroup.sha,
-                name: `${this.config.repository.repo}/${commitIdentifier}`,
+                identifier: this.buildResourceIdentifier(commitGroup.sha),
+                name: `Repo: ${this.config.repository.repo} Commit: ${commitGroup.sha}`,
                 url: commitUrl,
                 accessType: 'write',
                 status: 'success',
+                isCrossPromptInjectionDetected: false,
             }];
         for (const file of commitGroup.files) {
             accessedResources.push({
-                identifier: file.sha || file.path,
-                name: `${this.config.repository.repo}/${file.path}`,
+                identifier: this.buildResourceIdentifier(file.sha || file.path),
+                name: this.buildFileResourceName(file.path),
                 url: `${repoBaseUrl}/blob/${this.config.repository.branch}/${file.path}`,
                 accessType: this.mapChangeTypeToAccessType(file.typeOfChange),
                 status: 'success',
+                isCrossPromptInjectionDetected: false,
             });
         }
         const entry = {
@@ -64261,6 +64276,7 @@ class GitHubActionsRunner {
             // Step 3: Get event context info
             this.logger.info('Processing repository files');
             const prInfo = await this.fileProcessor.getPrInfo();
+            this.payloadBuilder.prNumber = prInfo.prNumber;
             const failedPayloads = [];
             const blockedFiles = [];
             const userPsDeniedCache = new Set();

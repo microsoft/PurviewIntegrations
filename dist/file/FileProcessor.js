@@ -335,6 +335,7 @@ export class FileProcessor {
             base: base,
             title: title,
             url: url,
+            prNumber: pr["number"],
         };
     }
     async getFilesForCommit(commitSha, authorId, committerId) {

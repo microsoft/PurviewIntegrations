@@ -435,11 +435,19 @@ describe('PayloadBuilder', () => {
       const entry = requests[0]!.contentToProcess.contentEntries[0] as any;
       expect(entry.accessedResources_v2).toHaveLength(1);
       const resource = entry.accessedResources_v2[0];
-      expect(resource.identifier).toBe('file-sha-1');
-      expect(resource.name).toBe('testRepo/src/app.ts');
+      expect(resource.identifier).toBe('Commit: file-sha-1');
+      expect(resource.name).toBe('Repo: testRepo File: app.ts Path: src/app.ts');
       expect(resource.url).toBe('https://github.com/testOwner/testRepo/blob/main/src/app.ts');
       expect(resource.accessType).toBe('write');
       expect(resource.status).toBe('success');
+    });
+
+    it('includes PR number in identifier when prNumber is set', () => {
+      builder.prNumber = 42;
+      const file = createFile({ path: 'src/app.ts', sha: 'file-sha-1', typeOfChange: 'modified' });
+      const requests = builder.buildPerUserProcessContentRequest(file, 'conv-1', 0);
+      const entry = requests[0]!.contentToProcess.contentEntries[0] as any;
+      expect(entry.accessedResources_v2[0].identifier).toBe('PR: 42 Commit: file-sha-1');
     });
 
     it('maps added files to accessType "create"', () => {
@@ -470,11 +478,14 @@ describe('PayloadBuilder', () => {
       const ctp = builder.buildCommitContentToProcess(commitGroup as any, 'conv-1', 0);
       const entry = ctp.contentEntries[0] as any;
       expect(entry.accessedResources_v2).toHaveLength(3); // 1 commit + 2 files
-      expect(entry.accessedResources_v2[0].identifier).toBe('abc123');
-      expect(entry.accessedResources_v2[0].name).toBe('testRepo/commit:abc123');
+      expect(entry.accessedResources_v2[0].identifier).toBe('Commit: abc123');
+      expect(entry.accessedResources_v2[0].name).toBe('Repo: testRepo Commit: abc123');
       expect(entry.accessedResources_v2[0].url).toContain('/commit/abc123');
-      expect(entry.accessedResources_v2[1].identifier).toBe('sha-a');
+      expect(entry.accessedResources_v2[1].identifier).toBe('Commit: sha-a');
+      expect(entry.accessedResources_v2[1].name).toBe('Repo: testRepo File: a.ts Path: a.ts');
       expect(entry.accessedResources_v2[1].accessType).toBe('create');
+      expect(entry.accessedResources_v2[2].identifier).toBe('Commit: sha-b');
+      expect(entry.accessedResources_v2[2].name).toBe('Repo: testRepo File: b.ts Path: b.ts');
       expect(entry.accessedResources_v2[2].accessType).toBe('write');
     });
   });

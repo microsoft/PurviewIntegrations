@@ -10,7 +10,11 @@ export declare class PayloadBuilder {
     private static readonly correlationIdSuffix;
     /** When true, agent version is set to "fullscan" instead of the defaultUserId. */
     isFullScan: boolean;
+    /** PR number, set when processing a pull request event. */
+    prNumber?: number;
     constructor(config: ActionConfig);
+    private buildResourceIdentifier;
+    private buildFileResourceName;
     buildProtectionScopesRequest(): ProtectionScopesRequest;
     buildProcessAndUploadRequests(files: FileMetadata[], scopeResponse: ProtectionScopesResponse, prInfo: PrInfo): SplitPCRequests;
     /**

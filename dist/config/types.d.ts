@@ -245,6 +245,7 @@ export interface PrInfo {
     base: string;
     title: string;
     url: string | null | undefined;
+    prNumber?: number;
 }
 export interface GraphUserInfoContainer {
     value: GraphUserInfo[];
