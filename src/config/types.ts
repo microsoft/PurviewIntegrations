@@ -92,6 +92,7 @@ export interface ProcessContentBatchRequest {
 export interface ProcessContentRequestItem {
     contentToProcess: ContentToProcess;
     userId?: string;
+    userEmail?: string;
     requestId: string;
 }
 

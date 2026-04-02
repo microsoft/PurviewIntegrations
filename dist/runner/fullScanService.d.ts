@@ -22,6 +22,12 @@ export declare class FullScanService {
      * Performs a full repository scan when it's the first run
      */
     performFullScan(stateInfo: StateTrackingInfo | undefined, failedPayloads: string[], prInfo: PrInfo, userPsDeniedCache: Set<string>, userPsCache: Map<string, ApiResponse<ProtectionScopesResponse>>): Promise<number>;
+    /**
+     * Fetch all repo commits and send each through the PCA / contentActivities
+     * pipeline, mirroring how the diff path handles commit-level requests.
+     */
+    private processCommitsForFullScan;
+    private sendCommitContentActivity;
     private resolveDefaultBranch;
     private ensureBranchExists;
     private detectFirstRun;

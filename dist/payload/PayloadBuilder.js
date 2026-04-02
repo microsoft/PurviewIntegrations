@@ -248,10 +248,12 @@ export class PayloadBuilder {
         for (const file of files) {
             const content = file.content || `File: ${file.path} (${file.size} bytes)`;
             const userId = file.authorId || this.config.userId;
+            const userEmail = file.authorEmail || undefined;
             const singleCTP = this.createContentToProcess(file, conversationId, seqNum);
             const singleItem = {
                 contentToProcess: singleCTP,
                 userId,
+                userEmail,
                 requestId: crypto.randomUUID(),
             };
             const itemSize = JSON.stringify(singleItem).length;
@@ -270,6 +272,7 @@ export class PayloadBuilder {
                     allItems.push({
                         contentToProcess: chunkCTP,
                         userId,
+                        userEmail,
                         requestId: crypto.randomUUID(),
                     });
                     seqNum++;
@@ -463,6 +466,7 @@ export class PayloadBuilder {
         return {
             contentToProcess: ctp,
             userId: commitGroup.authorId || this.config.userId,
+            userEmail: commitGroup.authorEmail || undefined,
             requestId: crypto.randomUUID(),
         };
     }

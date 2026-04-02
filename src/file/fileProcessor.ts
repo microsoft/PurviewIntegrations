@@ -241,6 +241,64 @@ export class FileProcessor {
   }
 
   /**
+   * Fetch recent commits for the default branch (used during full scans).
+   * Returns CommitFiles[] with author/committer metadata populated.
+   */
+  async getAllRepoCommits(): Promise<CommitFiles[]> {
+    const owner = this.config.repository.owner;
+    const repo = this.config.repository.repo;
+
+    this.logger.info('Fetching recent commits for full scan');
+    const { data: commits } = await this.octokit.rest.repos.listCommits({
+      owner,
+      repo,
+      per_page: 100,
+    });
+
+    if (commits.length === 0) {
+      this.logger.info('No commits found in repository');
+      return [];
+    }
+
+    this.logger.info(`Found ${commits.length} commit(s) for full scan`);
+
+    // Resolve author/committer emails to user IDs
+    const allEmails = new Set<string>();
+    for (const c of commits) {
+      const authorEmail = c.commit.author?.email;
+      const committerEmail = c.commit.committer?.email;
+      if (authorEmail) allEmails.add(authorEmail.toLowerCase());
+      if (committerEmail) allEmails.add(committerEmail.toLowerCase());
+    }
+    const userIdMap = await this.resolveUserIds(allEmails);
+
+    const result: CommitFiles[] = [];
+    for (const c of commits) {
+      const authorEmail = c.commit.author?.email || undefined;
+      const committerEmail = c.commit.committer?.email || undefined;
+      const authorId = authorEmail ? (userIdMap[authorEmail.toLowerCase()] || this.config.userId) : undefined;
+      const committerId = committerEmail ? (userIdMap[committerEmail.toLowerCase()] || this.config.userId) : undefined;
+
+      result.push({
+        sha: c.sha,
+        files: [],
+        message: c.commit.message || undefined,
+        authorEmail,
+        authorLogin: c.author?.login || undefined,
+        authorName: c.commit.author?.name || undefined,
+        authorId,
+        committerEmail,
+        committerLogin: c.committer?.login || undefined,
+        committerName: c.commit.committer?.name || undefined,
+        committerId,
+        timestamp: c.commit.author?.date || c.commit.committer?.date || undefined,
+      });
+    }
+
+    return result;
+  }
+
+  /**
    * Use `git log` to build a map of file path → last commit author email.
    * Runs a single git command for all files to stay efficient.
    */

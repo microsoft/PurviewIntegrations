@@ -23,6 +23,11 @@ export declare class FileProcessor {
     getChangedFiles(): Promise<string[]>;
     getAllRepoFiles(): Promise<FileMetadata[]>;
     /**
+     * Fetch recent commits for the default branch (used during full scans).
+     * Returns CommitFiles[] with author/committer metadata populated.
+     */
+    getAllRepoCommits(): Promise<CommitFiles[]>;
+    /**
      * Use `git log` to build a map of file path → last commit author email.
      * Runs a single git command for all files to stay efficient.
      */

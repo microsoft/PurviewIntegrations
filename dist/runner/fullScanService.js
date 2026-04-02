@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import * as github from '@actions/github';
 import { Logger } from '../utils/logger';
 import { StateService } from '../state/stateService';
@@ -98,11 +99,77 @@ export class FullScanService {
             this.logger.info(`Tenant PS returned ${tenantPsResponse.data.value.length} scope(s). Grouping files by user for per-user PS + PCA.`);
             await this.processFilesByUser(allFiles, prInfo, failedPayloads, psRequest, userPsDeniedCache, userPsCache);
         }
+        // Process every git commit as well
+        await this.processCommitsForFullScan(prInfo, failedPayloads, psRequest, userPsDeniedCache, userPsCache);
         // Write state marker
         if (stateInfo) {
             await this.writeStateMarker(stateInfo);
         }
         return fullScanFileCount;
+    }
+    /**
+     * Fetch all repo commits and send each through the PCA / contentActivities
+     * pipeline, mirroring how the diff path handles commit-level requests.
+     */
+    async processCommitsForFullScan(prInfo, failedPayloads, psRequest, userPsDeniedCache, userPsCache) {
+        const commitGroups = await this.fileProcessor.getAllRepoCommits();
+        if (commitGroups.length === 0) {
+            this.logger.info('No commits to process during full scan');
+            return;
+        }
+        this.logger.info(`Full scan: processing ${commitGroups.length} commit(s)`);
+        for (const commitGroup of commitGroups) {
+            const commitUserId = commitGroup.authorId || this.config.userId;
+            const commitIdentifier = `commit:${commitGroup.sha}`;
+            // Check user PS cache
+            if (userPsDeniedCache.has(commitUserId)) {
+                this.logger.warn(`Skipping commit ${commitGroup.sha} — user ${commitUserId} cached 401.`);
+                await this.sendCommitContentActivity(commitGroup, prInfo, failedPayloads);
+                continue;
+            }
+            let userPsResponse = userPsCache.get(commitUserId);
+            if (!userPsResponse) {
+                userPsResponse = await this.purviewClient.searchUserProtectionScope(commitUserId, psRequest);
+                if (userPsResponse.success) {
+                    userPsCache.set(commitUserId, userPsResponse);
+                }
+            }
+            if (!userPsResponse.success) {
+                this.logger.error(`User PS failed for commit ${commitGroup.sha}, user ${commitUserId}: ${userPsResponse.error}`);
+                failedPayloads.push(`ps-fullscan-commit-${commitGroup.sha}`);
+                if (userPsResponse.statusCode === 401) {
+                    userPsDeniedCache.add(commitUserId);
+                }
+                await this.sendCommitContentActivity(commitGroup, prInfo, failedPayloads);
+                continue;
+            }
+            if (!userPsResponse.data?.value || userPsResponse.data.value.length === 0) {
+                this.logger.warn(`No scopes for commit ${commitGroup.sha}, user ${commitUserId}. Falling back to contentActivities.`);
+                await this.sendCommitContentActivity(commitGroup, prInfo, failedPayloads);
+                continue;
+            }
+            // Send via PCA batch
+            const conversationId = crypto.randomUUID() + '@GA';
+            const pcaItem = this.payloadBuilder.buildCommitProcessContentBatchItem(commitGroup, conversationId, 0);
+            const pcaBatch = { processContentRequests: [pcaItem] };
+            const pcaResult = await this.purviewClient.processContentAsync(pcaBatch);
+            if (!pcaResult.success) {
+                this.logger.error(`PCA failed for commit ${commitGroup.sha}: ${pcaResult.error}. Falling back to contentActivities.`);
+                failedPayloads.push(`pca-fullscan-commit-${commitGroup.sha}`);
+                await this.sendCommitContentActivity(commitGroup, prInfo, failedPayloads);
+            }
+            else {
+                this.logger.info(`Full scan: PCA completed for ${commitIdentifier}`);
+            }
+        }
+    }
+    async sendCommitContentActivity(commitGroup, prInfo, failedPayloads) {
+        const req = this.payloadBuilder.buildCommitUploadSignalRequest(commitGroup, prInfo);
+        const result = await this.purviewClient.uploadSignal(req);
+        if (!result.success) {
+            this.logger.error(`ContentActivities upload failed for commit ${commitGroup.sha}: ${result.error}`);
+            failedPayloads.push(`ca-fullscan-commit-${commitGroup.sha}`);
+        }
     }
     async resolveDefaultBranch(token, owner, repo) {
         try {

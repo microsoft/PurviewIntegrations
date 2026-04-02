@@ -117,6 +117,7 @@ export async function validateInputs() {
         // Get optional inputs
         const filePatterns = core.getInput('file-patterns') || '**';
         const excludePatternsRaw = core.getInput('exclude-patterns') || '';
+        const userExcludePatterns = excludePatternsRaw.split(',').map(p => p.trim()).filter(Boolean);
         const maxFileSize = parseInt(core.getInput('max-file-size') || '10485760', 10);
         const debug = core.getBooleanInput('debug');
         // (stateRepoBranch and stateRepoToken were read earlier, before users.json loading)
@@ -145,7 +146,7 @@ export async function validateInputs() {
             purviewAccountName,
             purviewEndpoint,
             filePatterns: filePatterns.split(',').map(p => p.trim()).filter(Boolean),
-            excludePatterns: excludePatternsRaw.split(',').map(p => p.trim()).filter(Boolean),
+            excludePatterns: [...new Set(['**/.git/**', ...userExcludePatterns])],
             maxFileSize,
             debug,
             repository,
