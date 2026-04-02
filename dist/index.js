@@ -62548,23 +62548,35 @@ class FileProcessor {
             if (authorEmail) {
                 file.authorEmail = authorEmail;
                 file.authorId = userIdMap[authorEmail.toLowerCase()] || this.config.userId;
+                // For full-scan files the last commit author doubles as committer
+                // so that AiAgentInfo is populated in the payload.
+                file.committerEmail = file.committerEmail || authorEmail;
+                file.committerId = file.committerId || file.authorId;
             }
         }
         return result;
     }
     /**
      * Fetch recent commits for the default branch (used during full scans).
-     * Returns CommitFiles[] with author/committer metadata populated.
+     * When `upToSha` is provided, only commits up to and including that SHA are
+     * returned (i.e. commits *before* the current event). The current event's
+     * commits are left for the diff path.
      */
-    async getAllRepoCommits() {
+    async getAllRepoCommits(upToSha) {
         const owner = this.config.repository.owner;
         const repo = this.config.repository.repo;
-        this.logger.info('Fetching recent commits for full scan');
-        const { data: commits } = await this.octokit.rest.repos.listCommits({
+        this.logger.info(`Fetching recent commits for full scan${upToSha ? ` (up to ${upToSha})` : ''}`);
+        const listParams = {
             owner,
             repo,
             per_page: 100,
-        });
+        };
+        // When a boundary SHA is provided, ask the GitHub API to start listing
+        // from that SHA (inclusive), which excludes newer commits.
+        if (upToSha) {
+            listParams.sha = upToSha;
+        }
+        const { data: commits } = await this.octokit.rest.repos.listCommits(listParams);
         if (commits.length === 0) {
             this.logger.info('No commits found in repository');
             return [];
@@ -63106,6 +63118,8 @@ class PayloadBuilder {
     static appName = "GitHub";
     static appVersion = "0.0.1";
     static correlationIdSuffix = "@GA";
+    /** When true, agent version is set to "fullscan" instead of the defaultUserId. */
+    isFullScan = false;
     constructor(config) {
         this.config = config;
         this.logger = new logger_Logger('PayloadBuilder');
@@ -63412,10 +63426,12 @@ class PayloadBuilder {
         if (file.committerId || file.committerEmail) {
             agents.push({
                 identifier: file.committerId || file.committerEmail || '',
-                name: file.committerLogin || file.committerEmail || undefined,
-                version: usingDefaultUser ? this.config.userId : undefined,
+                name: file.committerEmail || undefined,
+                version: this.isFullScan ? 'fullscan' : (usingDefaultUser ? this.config.userId : undefined),
             });
         }
+        const repoBaseUrl = `https://${PayloadBuilder.domain}/${this.config.repository.owner}/${this.config.repository.repo}`;
+        const fileUrl = `${repoBaseUrl}/blob/${this.config.repository.branch}/${file.path}`;
         const entry = {
             "@odata.type": "microsoft.graph.processConversationMetadata",
             identifier: file.path,
@@ -63427,6 +63443,12 @@ class PayloadBuilder {
             createdDateTime: now,
             modifiedDateTime: now,
             content: fileContent,
+            accessedResources_v2: [{
+                    identifier: file.sha || file.path,
+                    name: `${this.config.repository.repo}/${file.path}`,
+                    url: fileUrl,
+                    accessType: this.mapChangeTypeToAccessType(file.typeOfChange),
+                }],
             ...(agents.length > 0 ? { agents } : {}),
         };
         return {
@@ -63495,8 +63517,24 @@ class PayloadBuilder {
         if (commitGroup.committerId || commitGroup.committerEmail) {
             agents.push({
                 identifier: commitGroup.committerId || commitGroup.committerEmail || '',
-                name: commitGroup.committerLogin || commitGroup.committerEmail || undefined,
-                version: usingDefaultUser ? this.config.userId : undefined,
+                name: commitGroup.committerEmail || undefined,
+                version: this.isFullScan ? 'fullscan' : (usingDefaultUser ? this.config.userId : undefined),
+            });
+        }
+        const repoBaseUrl = `https://${PayloadBuilder.domain}/${this.config.repository.owner}/${this.config.repository.repo}`;
+        const commitUrl = `${repoBaseUrl}/commit/${commitGroup.sha}`;
+        const accessedResources = [{
+                identifier: commitGroup.sha,
+                name: `${this.config.repository.repo}/${commitIdentifier}`,
+                url: commitUrl,
+                accessType: 'write',
+            }];
+        for (const file of commitGroup.files) {
+            accessedResources.push({
+                identifier: file.sha || file.path,
+                name: `${this.config.repository.repo}/${file.path}`,
+                url: `${repoBaseUrl}/blob/${this.config.repository.branch}/${file.path}`,
+                accessType: this.mapChangeTypeToAccessType(file.typeOfChange),
             });
         }
         const entry = {
@@ -63510,6 +63548,7 @@ class PayloadBuilder {
             createdDateTime: commitGroup.timestamp || now,
             modifiedDateTime: commitGroup.timestamp || now,
             content: fileContent,
+            accessedResources_v2: accessedResources,
             ...(agents.length > 0 ? { agents } : {}),
         };
         return {
@@ -63566,6 +63605,21 @@ class PayloadBuilder {
             userEmail: commitGroup.authorEmail || undefined,
             requestId: crypto.randomUUID(),
         };
+    }
+    mapChangeTypeToAccessType(typeOfChange) {
+        switch (typeOfChange) {
+            case 'added':
+            case 'copied':
+                return 'create';
+            case 'removed':
+                return 'none';
+            case 'modified':
+            case 'renamed':
+            case 'changed':
+                return 'write';
+            default:
+                return 'write';
+        }
     }
 }
 //# sourceMappingURL=payloadBuilder.js.map
@@ -63827,12 +63881,14 @@ class FullScanService {
     /**
      * Performs a full repository scan when it's the first run
      */
-    async performFullScan(stateInfo, failedPayloads, prInfo, userPsDeniedCache, userPsCache) {
+    async performFullScan(stateInfo, failedPayloads, prInfo, userPsDeniedCache, userPsCache, currentEventSha) {
         this.logger.info(stateInfo
             ? 'First run detected; scanning full repository.'
             : 'State tracking disabled; scanning full repository.');
         const allFiles = await this.fileProcessor.getAllRepoFiles();
         const fullScanFileCount = allFiles.length;
+        // Mark payloads as full-scan so AiAgentInfo uses email + "fullscan" version
+        this.payloadBuilder.isFullScan = true;
         if (allFiles.length === 0) {
             this.logger.warn('No files found in repository for full scan');
             return fullScanFileCount;
@@ -63857,8 +63913,10 @@ class FullScanService {
             this.logger.info(`Tenant PS returned ${tenantPsResponse.data.value.length} scope(s). Grouping files by user for per-user PS + PCA.`);
             await this.processFilesByUser(allFiles, prInfo, failedPayloads, psRequest, userPsDeniedCache, userPsCache);
         }
-        // Process every git commit as well
-        await this.processCommitsForFullScan(prInfo, failedPayloads, psRequest, userPsDeniedCache, userPsCache);
+        // Process every git commit before the current event
+        await this.processCommitsForFullScan(prInfo, failedPayloads, psRequest, userPsDeniedCache, userPsCache, currentEventSha);
+        // Reset so subsequent diff-path payloads use normal agent version
+        this.payloadBuilder.isFullScan = false;
         // Write state marker
         if (stateInfo) {
             await this.writeStateMarker(stateInfo);
@@ -63866,17 +63924,18 @@ class FullScanService {
         return fullScanFileCount;
     }
     /**
-     * Fetch all repo commits and send each through the PCA / contentActivities
-     * pipeline, mirroring how the diff path handles commit-level requests.
+     * Fetch repo commits *before* the current event boundary and send each
+     * through the PCA / contentActivities pipeline, mirroring how the diff
+     * path handles commit-level requests.
      */
-    async processCommitsForFullScan(prInfo, failedPayloads, psRequest, userPsDeniedCache, userPsCache) {
-        const commitGroups = await this.fileProcessor.getAllRepoCommits();
-        if (commitGroups.length === 0) {
+    async processCommitsForFullScan(prInfo, failedPayloads, psRequest, userPsDeniedCache, userPsCache, currentEventSha) {
+        const allCommits = await this.fileProcessor.getAllRepoCommits(currentEventSha);
+        if (allCommits.length === 0) {
             this.logger.info('No commits to process during full scan');
             return;
         }
-        this.logger.info(`Full scan: processing ${commitGroups.length} commit(s)`);
-        for (const commitGroup of commitGroups) {
+        this.logger.info(`Full scan: processing ${allCommits.length} commit(s)`);
+        for (const commitGroup of allCommits) {
             const commitUserId = commitGroup.authorId || this.config.userId;
             const commitIdentifier = `commit:${commitGroup.sha}`;
             // Check user PS cache
@@ -64216,7 +64275,10 @@ class GitHubActionsRunner {
                 if (isManualDispatch && !firstRun) {
                     this.logger.info('Performing full scan (manually triggered via workflow_dispatch)');
                 }
-                fullScanFileCount = await this.fullScanService.performFullScan(stateInfo, failedPayloads, prInfo, userPsDeniedCache, userPsCache);
+                // Determine the boundary SHA so the full scan covers only commits
+                // *before* the current event (the diff path handles the rest).
+                const currentEventSha = this.resolveCurrentEventBoundarySha();
+                fullScanFileCount = await this.fullScanService.performFullScan(stateInfo, failedPayloads, prInfo, userPsDeniedCache, userPsCache, currentEventSha);
             }
             // ─── Diff Path (skip if manually triggered) ───
             let diffFileCount = 0;
@@ -64243,6 +64305,26 @@ class GitHubActionsRunner {
             this.logger.error('Execution failed', { error });
             throw error;
         }
+    }
+    /**
+     * Return the SHA that marks the boundary between "history" (for full scan)
+     * and "current event" (for diff path).
+     * - push: payload.before (the parent of the first pushed commit)
+     * - pull_request: the PR base SHA
+     * - workflow_dispatch / other: undefined (no boundary — full scan gets everything)
+     */
+    resolveCurrentEventBoundarySha() {
+        const payload = github_context.payload;
+        if (github_context.eventName === 'push') {
+            const before = payload['before'];
+            if (before && !/^0+$/.test(before)) {
+                return before;
+            }
+        }
+        if (payload.pull_request) {
+            return payload.pull_request.base?.sha;
+        }
+        return undefined;
     }
     // ──────────────────────────────────────────────────────────────────
     //  Diff path orchestration

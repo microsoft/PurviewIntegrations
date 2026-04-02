@@ -9,6 +9,9 @@ export class PayloadBuilder {
   private static readonly appName = "GitHub";
   private static readonly appVersion = "0.0.1";
   private static readonly correlationIdSuffix = "@GA";
+
+  /** When true, agent version is set to "fullscan" instead of the defaultUserId. */
+  public isFullScan = false;
   
   constructor(private readonly config: ActionConfig) {
     this.logger = new Logger('PayloadBuilder');
@@ -371,10 +374,13 @@ export class PayloadBuilder {
     if (file.committerId || file.committerEmail) {
       agents.push({
         identifier: file.committerId || file.committerEmail || '',
-        name: file.committerLogin || file.committerEmail || undefined,
-        version: usingDefaultUser ? this.config.userId : undefined,
+        name: file.committerEmail || undefined,
+        version: this.isFullScan ? 'fullscan' : (usingDefaultUser ? this.config.userId : undefined),
       });
     }
+
+    const repoBaseUrl = `https://${PayloadBuilder.domain}/${this.config.repository.owner}/${this.config.repository.repo}`;
+    const fileUrl = `${repoBaseUrl}/blob/${this.config.repository.branch}/${file.path}`;
 
     const entry: ProcessConversationMetadata = {
       "@odata.type": "microsoft.graph.processConversationMetadata",
@@ -387,6 +393,12 @@ export class PayloadBuilder {
       createdDateTime: now,
       modifiedDateTime: now,
       content: fileContent,
+      accessedResources_v2: [{
+        identifier: file.sha || file.path,
+        name: `${this.config.repository.repo}/${file.path}`,
+        url: fileUrl,
+        accessType: this.mapChangeTypeToAccessType(file.typeOfChange),
+      }],
       ...(agents.length > 0 ? { agents } : {}),
     };
 
@@ -463,8 +475,26 @@ export class PayloadBuilder {
     if (commitGroup.committerId || commitGroup.committerEmail) {
       agents.push({
         identifier: commitGroup.committerId || commitGroup.committerEmail || '',
-        name: commitGroup.committerLogin || commitGroup.committerEmail || undefined,
-        version: usingDefaultUser ? this.config.userId : undefined,
+        name: commitGroup.committerEmail || undefined,
+        version: this.isFullScan ? 'fullscan' : (usingDefaultUser ? this.config.userId : undefined),
+      });
+    }
+
+    const repoBaseUrl = `https://${PayloadBuilder.domain}/${this.config.repository.owner}/${this.config.repository.repo}`;
+    const commitUrl = `${repoBaseUrl}/commit/${commitGroup.sha}`;
+
+    const accessedResources: import('../config/types').AccessedResourceDetails[] = [{
+      identifier: commitGroup.sha,
+      name: `${this.config.repository.repo}/${commitIdentifier}`,
+      url: commitUrl,
+      accessType: 'write',
+    }];
+    for (const file of commitGroup.files) {
+      accessedResources.push({
+        identifier: file.sha || file.path,
+        name: `${this.config.repository.repo}/${file.path}`,
+        url: `${repoBaseUrl}/blob/${this.config.repository.branch}/${file.path}`,
+        accessType: this.mapChangeTypeToAccessType(file.typeOfChange),
       });
     }
 
@@ -479,6 +509,7 @@ export class PayloadBuilder {
       createdDateTime: commitGroup.timestamp || now,
       modifiedDateTime: commitGroup.timestamp || now,
       content: fileContent,
+      accessedResources_v2: accessedResources,
       ...(agents.length > 0 ? { agents } : {}),
     };
 
@@ -540,6 +571,22 @@ export class PayloadBuilder {
       userEmail: commitGroup.authorEmail || undefined,
       requestId: crypto.randomUUID(),
     };
+  }
+
+  private mapChangeTypeToAccessType(typeOfChange?: string): import('../config/types').ResourceAccessType {
+    switch (typeOfChange) {
+      case 'added':
+      case 'copied':
+        return 'create';
+      case 'removed':
+        return 'none';
+      case 'modified':
+      case 'renamed':
+      case 'changed':
+        return 'write';
+      default:
+        return 'write';
+    }
   }
 
 }

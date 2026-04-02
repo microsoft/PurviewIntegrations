@@ -24,9 +24,11 @@ export declare class FileProcessor {
     getAllRepoFiles(): Promise<FileMetadata[]>;
     /**
      * Fetch recent commits for the default branch (used during full scans).
-     * Returns CommitFiles[] with author/committer metadata populated.
+     * When `upToSha` is provided, only commits up to and including that SHA are
+     * returned (i.e. commits *before* the current event). The current event's
+     * commits are left for the diff path.
      */
-    getAllRepoCommits(): Promise<CommitFiles[]>;
+    getAllRepoCommits(upToSha?: string): Promise<CommitFiles[]>;
     /**
      * Use `git log` to build a map of file path → last commit author email.
      * Runs a single git command for all files to stay efficient.

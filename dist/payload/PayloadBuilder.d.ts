@@ -8,6 +8,8 @@ export declare class PayloadBuilder {
     private static readonly appName;
     private static readonly appVersion;
     private static readonly correlationIdSuffix;
+    /** When true, agent version is set to "fullscan" instead of the defaultUserId. */
+    isFullScan: boolean;
     constructor(config: ActionConfig);
     buildProtectionScopesRequest(): ProtectionScopesRequest;
     buildProcessAndUploadRequests(files: FileMetadata[], scopeResponse: ProtectionScopesResponse, prInfo: PrInfo): SplitPCRequests;
@@ -48,5 +50,6 @@ export declare class PayloadBuilder {
      * Build a ProcessContentBatchRequest item for a git commit (PCA batch).
      */
     buildCommitProcessContentBatchItem(commitGroup: CommitFiles, conversationId: string, sequenceNumber: number): ProcessContentRequestItem;
+    private mapChangeTypeToAccessType;
 }
 //# sourceMappingURL=payloadBuilder.d.ts.map

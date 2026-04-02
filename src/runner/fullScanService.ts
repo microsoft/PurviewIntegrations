@@ -104,7 +104,8 @@ export class FullScanService {
     failedPayloads: string[],
     prInfo: PrInfo,
     userPsDeniedCache: Set<string>,
-    userPsCache: Map<string, ApiResponse<ProtectionScopesResponse>>
+    userPsCache: Map<string, ApiResponse<ProtectionScopesResponse>>,
+    currentEventSha?: string
   ): Promise<number> {
     this.logger.info(
       stateInfo
@@ -114,6 +115,9 @@ export class FullScanService {
 
     const allFiles = await this.fileProcessor.getAllRepoFiles();
     const fullScanFileCount = allFiles.length;
+
+    // Mark payloads as full-scan so AiAgentInfo uses email + "fullscan" version
+    this.payloadBuilder.isFullScan = true;
 
     if (allFiles.length === 0) {
       this.logger.warn('No files found in repository for full scan');
@@ -140,8 +144,11 @@ export class FullScanService {
       await this.processFilesByUser(allFiles, prInfo, failedPayloads, psRequest, userPsDeniedCache, userPsCache);
     }
 
-    // Process every git commit as well
-    await this.processCommitsForFullScan(prInfo, failedPayloads, psRequest, userPsDeniedCache, userPsCache);
+    // Process every git commit before the current event
+    await this.processCommitsForFullScan(prInfo, failedPayloads, psRequest, userPsDeniedCache, userPsCache, currentEventSha);
+
+    // Reset so subsequent diff-path payloads use normal agent version
+    this.payloadBuilder.isFullScan = false;
 
     // Write state marker
     if (stateInfo) {
@@ -152,24 +159,26 @@ export class FullScanService {
   }
 
   /**
-   * Fetch all repo commits and send each through the PCA / contentActivities
-   * pipeline, mirroring how the diff path handles commit-level requests.
+   * Fetch repo commits *before* the current event boundary and send each
+   * through the PCA / contentActivities pipeline, mirroring how the diff
+   * path handles commit-level requests.
    */
   private async processCommitsForFullScan(
     prInfo: PrInfo,
     failedPayloads: string[],
     psRequest: ProtectionScopesRequest,
     userPsDeniedCache: Set<string>,
-    userPsCache: Map<string, ApiResponse<ProtectionScopesResponse>>
+    userPsCache: Map<string, ApiResponse<ProtectionScopesResponse>>,
+    currentEventSha?: string
   ): Promise<void> {
-    const commitGroups = await this.fileProcessor.getAllRepoCommits();
-    if (commitGroups.length === 0) {
+    const allCommits = await this.fileProcessor.getAllRepoCommits(currentEventSha);
+    if (allCommits.length === 0) {
       this.logger.info('No commits to process during full scan');
       return;
     }
-    this.logger.info(`Full scan: processing ${commitGroups.length} commit(s)`);
+    this.logger.info(`Full scan: processing ${allCommits.length} commit(s)`);
 
-    for (const commitGroup of commitGroups) {
+    for (const commitGroup of allCommits) {
       const commitUserId = commitGroup.authorId || this.config.userId;
       const commitIdentifier = `commit:${commitGroup.sha}`;
 

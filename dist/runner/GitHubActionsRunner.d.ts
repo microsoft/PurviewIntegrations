@@ -9,6 +9,14 @@ export declare class GitHubActionsRunner {
     private readonly fullScanService;
     constructor(config: ActionConfig);
     execute(): Promise<void>;
+    /**
+     * Return the SHA that marks the boundary between "history" (for full scan)
+     * and "current event" (for diff path).
+     * - push: payload.before (the parent of the first pushed commit)
+     * - pull_request: the PR base SHA
+     * - workflow_dispatch / other: undefined (no boundary — full scan gets everything)
+     */
+    private resolveCurrentEventBoundarySha;
     private processDiffPath;
     private processCommitGroup;
     private processUserFiles;

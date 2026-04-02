@@ -234,6 +234,10 @@ export class FileProcessor {
       if (authorEmail) {
         file.authorEmail = authorEmail;
         file.authorId = userIdMap[authorEmail.toLowerCase()] || this.config.userId;
+        // For full-scan files the last commit author doubles as committer
+        // so that AiAgentInfo is populated in the payload.
+        file.committerEmail = file.committerEmail || authorEmail;
+        file.committerId = file.committerId || file.authorId;
       }
     }
 
@@ -242,18 +246,26 @@ export class FileProcessor {
 
   /**
    * Fetch recent commits for the default branch (used during full scans).
-   * Returns CommitFiles[] with author/committer metadata populated.
+   * When `upToSha` is provided, only commits up to and including that SHA are
+   * returned (i.e. commits *before* the current event). The current event's
+   * commits are left for the diff path.
    */
-  async getAllRepoCommits(): Promise<CommitFiles[]> {
+  async getAllRepoCommits(upToSha?: string): Promise<CommitFiles[]> {
     const owner = this.config.repository.owner;
     const repo = this.config.repository.repo;
 
-    this.logger.info('Fetching recent commits for full scan');
-    const { data: commits } = await this.octokit.rest.repos.listCommits({
+    this.logger.info(`Fetching recent commits for full scan${upToSha ? ` (up to ${upToSha})` : ''}`);
+    const listParams: { owner: string; repo: string; per_page: number; sha?: string } = {
       owner,
       repo,
       per_page: 100,
-    });
+    };
+    // When a boundary SHA is provided, ask the GitHub API to start listing
+    // from that SHA (inclusive), which excludes newer commits.
+    if (upToSha) {
+      listParams.sha = upToSha;
+    }
+    const { data: commits } = await this.octokit.rest.repos.listCommits(listParams);
 
     if (commits.length === 0) {
       this.logger.info('No commits found in repository');

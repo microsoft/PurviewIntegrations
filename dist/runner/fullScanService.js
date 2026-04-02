@@ -69,12 +69,14 @@ export class FullScanService {
     /**
      * Performs a full repository scan when it's the first run
      */
-    async performFullScan(stateInfo, failedPayloads, prInfo, userPsDeniedCache, userPsCache) {
+    async performFullScan(stateInfo, failedPayloads, prInfo, userPsDeniedCache, userPsCache, currentEventSha) {
         this.logger.info(stateInfo
             ? 'First run detected; scanning full repository.'
             : 'State tracking disabled; scanning full repository.');
         const allFiles = await this.fileProcessor.getAllRepoFiles();
         const fullScanFileCount = allFiles.length;
+        // Mark payloads as full-scan so AiAgentInfo uses email + "fullscan" version
+        this.payloadBuilder.isFullScan = true;
         if (allFiles.length === 0) {
             this.logger.warn('No files found in repository for full scan');
             return fullScanFileCount;
@@ -99,8 +101,10 @@ export class FullScanService {
             this.logger.info(`Tenant PS returned ${tenantPsResponse.data.value.length} scope(s). Grouping files by user for per-user PS + PCA.`);
             await this.processFilesByUser(allFiles, prInfo, failedPayloads, psRequest, userPsDeniedCache, userPsCache);
         }
-        // Process every git commit as well
-        await this.processCommitsForFullScan(prInfo, failedPayloads, psRequest, userPsDeniedCache, userPsCache);
+        // Process every git commit before the current event
+        await this.processCommitsForFullScan(prInfo, failedPayloads, psRequest, userPsDeniedCache, userPsCache, currentEventSha);
+        // Reset so subsequent diff-path payloads use normal agent version
+        this.payloadBuilder.isFullScan = false;
         // Write state marker
         if (stateInfo) {
             await this.writeStateMarker(stateInfo);
@@ -108,17 +112,18 @@ export class FullScanService {
         return fullScanFileCount;
     }
     /**
-     * Fetch all repo commits and send each through the PCA / contentActivities
-     * pipeline, mirroring how the diff path handles commit-level requests.
+     * Fetch repo commits *before* the current event boundary and send each
+     * through the PCA / contentActivities pipeline, mirroring how the diff
+     * path handles commit-level requests.
      */
-    async processCommitsForFullScan(prInfo, failedPayloads, psRequest, userPsDeniedCache, userPsCache) {
-        const commitGroups = await this.fileProcessor.getAllRepoCommits();
-        if (commitGroups.length === 0) {
+    async processCommitsForFullScan(prInfo, failedPayloads, psRequest, userPsDeniedCache, userPsCache, currentEventSha) {
+        const allCommits = await this.fileProcessor.getAllRepoCommits(currentEventSha);
+        if (allCommits.length === 0) {
             this.logger.info('No commits to process during full scan');
             return;
         }
-        this.logger.info(`Full scan: processing ${commitGroups.length} commit(s)`);
-        for (const commitGroup of commitGroups) {
+        this.logger.info(`Full scan: processing ${allCommits.length} commit(s)`);
+        for (const commitGroup of allCommits) {
             const commitUserId = commitGroup.authorId || this.config.userId;
             const commitIdentifier = `commit:${commitGroup.sha}`;
             // Check user PS cache

@@ -78,7 +78,10 @@ export class GitHubActionsRunner {
         if (isManualDispatch && !firstRun) {
           this.logger.info('Performing full scan (manually triggered via workflow_dispatch)');
         }
-        fullScanFileCount = await this.fullScanService.performFullScan(stateInfo, failedPayloads, prInfo, userPsDeniedCache, userPsCache);
+        // Determine the boundary SHA so the full scan covers only commits
+        // *before* the current event (the diff path handles the rest).
+        const currentEventSha = this.resolveCurrentEventBoundarySha();
+        fullScanFileCount = await this.fullScanService.performFullScan(stateInfo, failedPayloads, prInfo, userPsDeniedCache, userPsCache, currentEventSha);
       }
 
       // ─── Diff Path (skip if manually triggered) ───
@@ -108,6 +111,27 @@ export class GitHubActionsRunner {
       this.logger.error('Execution failed', { error });
       throw error;
     }
+  }
+
+  /**
+   * Return the SHA that marks the boundary between "history" (for full scan)
+   * and "current event" (for diff path).
+   * - push: payload.before (the parent of the first pushed commit)
+   * - pull_request: the PR base SHA
+   * - workflow_dispatch / other: undefined (no boundary — full scan gets everything)
+   */
+  private resolveCurrentEventBoundarySha(): string | undefined {
+    const payload = github.context.payload;
+    if (github.context.eventName === 'push') {
+      const before = payload['before'] as string | undefined;
+      if (before && !/^0+$/.test(before)) {
+        return before;
+      }
+    }
+    if (payload.pull_request) {
+      return (payload.pull_request as any).base?.sha as string | undefined;
+    }
+    return undefined;
   }
 
   // ──────────────────────────────────────────────────────────────────

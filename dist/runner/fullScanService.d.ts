@@ -21,10 +21,11 @@ export declare class FullScanService {
     /**
      * Performs a full repository scan when it's the first run
      */
-    performFullScan(stateInfo: StateTrackingInfo | undefined, failedPayloads: string[], prInfo: PrInfo, userPsDeniedCache: Set<string>, userPsCache: Map<string, ApiResponse<ProtectionScopesResponse>>): Promise<number>;
+    performFullScan(stateInfo: StateTrackingInfo | undefined, failedPayloads: string[], prInfo: PrInfo, userPsDeniedCache: Set<string>, userPsCache: Map<string, ApiResponse<ProtectionScopesResponse>>, currentEventSha?: string): Promise<number>;
     /**
-     * Fetch all repo commits and send each through the PCA / contentActivities
-     * pipeline, mirroring how the diff path handles commit-level requests.
+     * Fetch repo commits *before* the current event boundary and send each
+     * through the PCA / contentActivities pipeline, mirroring how the diff
+     * path handles commit-level requests.
      */
     private processCommitsForFullScan;
     private sendCommitContentActivity;
