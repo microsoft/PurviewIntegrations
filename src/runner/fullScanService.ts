@@ -224,7 +224,7 @@ export class FullScanService {
         failedPayloads.push(`pca-fullscan-commit-${commitGroup.sha}`);
         await this.sendCommitContentActivity(commitGroup, prInfo, failedPayloads);
       } else {
-        this.logger.info(`Full scan: PCA completed for ${commitIdentifier}`);
+        this.logger.debug(`Full scan: PCA completed for ${commitIdentifier}`);
       }
     }
   }
@@ -423,7 +423,7 @@ export class FullScanService {
       // Call per-user protection scopes (check cache first)
       let userPsResponse = userPsCache.get(userId);
       if (userPsResponse) {
-        this.logger.info(`Full scan: using cached PS response for user ${userId}`);
+        this.logger.debug(`Full scan: using cached PS response for user ${userId}`);
       } else {
         userPsResponse = await this.purviewClient.searchUserProtectionScope(userId, psRequest);
         if (userPsResponse.success) {
@@ -461,7 +461,7 @@ export class FullScanService {
           await this.sendContentActivities(userFiles, prInfo, failedPayloads);
           break;
         } else {
-          this.logger.info(`Full scan PCA batch completed for user ${userId}`);
+          this.logger.debug(`Full scan PCA batch completed for user ${userId}`);
         }
       }
     }

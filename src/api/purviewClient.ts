@@ -106,7 +106,7 @@ export class PurviewClient {
       throw new Error('Authentication token not set');
     }
 
-    this.logger.info(`Uploading signal for ${payload.contentMetadata.contentEntries[0]?.identifier}`);
+    this.logger.debug(`Uploading signal for ${payload.contentMetadata.contentEntries[0]?.identifier}`);
 
     const endpoint = `${this.baseUrl}/users/${payload.userId}/dataSecurityAndGovernance/activities/contentActivities`;
     let payloadString: string = JSON.stringify(payload, this.jsonReplacer);

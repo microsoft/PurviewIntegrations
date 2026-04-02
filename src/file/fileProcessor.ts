@@ -66,7 +66,7 @@ export class FileProcessor {
       const cached = this.graphUserIdCache.get(email);
       if (cached) {
         resolved[email] = cached;
-        this.logger.info(`Graph cache hit for '${email}': ${cached}`);
+        this.logger.debug(`Graph cache hit for '${email}': ${cached}`);
       } else {
         needsGraph.push(email);
       }
@@ -84,7 +84,7 @@ export class FileProcessor {
             const upn = user.userPrincipalName.toLowerCase();
             this.graphUserIdCache.set(upn, user.id);
             resolved[upn] = user.id;
-            this.logger.info(`Graph API resolved '${upn}': ${user.id}`);
+            this.logger.debug(`Graph API resolved '${upn}': ${user.id}`);
           }
         }
 
@@ -93,7 +93,7 @@ export class FileProcessor {
         for (const email of needsGraph) {
           if (!this.graphUserIdCache.has(email.toLowerCase())) {
             this.graphUserIdCache.set(email.toLowerCase(), this.config.userId);
-            this.logger.info(`Graph API: user '${email}' not found, caching as default userId`);
+            this.logger.debug(`Graph API: user '${email}' not found, caching as default userId`);
           }
         }
       } catch (e) {
@@ -141,14 +141,14 @@ export class FileProcessor {
       : includePatterns.some(p => minimatch(normalized, p, { dot: true }));
 
     if (!included) {
-      this.logger.info(`Excluding file '${path}' because it does not match any include patterns.`);
+      this.logger.debug(`Excluding file '${path}' because it does not match any include patterns.`);
       return false;
     }
 
     const excluded = excludePatterns.some(p => minimatch(normalized, p, { dot: true }));
 
     if (excluded) {
-      this.logger.info(`Excluding file '${path}' due to exclude pattern match.`);
+      this.logger.debug(`Excluding file '${path}' due to exclude pattern match.`);
     }
 
     return !excluded;
@@ -203,7 +203,7 @@ export class FileProcessor {
         const encoding = isBinary ? 'base64' : 'utf-8';
 
         if (isBinary) {
-          this.logger.info(`Skipping binary file: ${filePath}`);
+          this.logger.debug(`Skipping binary file: ${filePath}`);
           continue;
         }
 
@@ -300,7 +300,7 @@ export class FileProcessor {
       }
 
       if (isBinaryPath(filePath)) {
-        this.logger.info(`Skipping binary file: ${filePath}`);
+        this.logger.debug(`Skipping binary file: ${filePath}`);
         continue;
       }
 
@@ -531,11 +531,11 @@ export class FileProcessor {
 
     const filteredCommitFiles = commit.files!.filter((f: CommitFile) => this.shouldIncludePath(f.filename));
 
-    this.logger.info(`Commit ${commit.sha}: ${filteredCommitFiles.length}/${commit.files.length} files match the configured patterns.`);
+    this.logger.debug(`Commit ${commit.sha}: ${filteredCommitFiles.length}/${commit.files.length} files match the configured patterns.`);
 
     for (const file of filteredCommitFiles) {
       if (isBinaryPath(file.filename)) {
-        this.logger.info(`Skipping binary file: ${file.filename}`);
+        this.logger.debug(`Skipping binary file: ${file.filename}`);
         continue;
       }
 
@@ -919,7 +919,7 @@ export class FileProcessor {
 
     const result: CommitFiles[] = [];
     for (const commit of commitsToProcess) {
-      this.logger.info(`Processing commit: ${commit.sha}`);
+      this.logger.debug(`Processing commit: ${commit.sha}`);
       let userId: string | undefined;
       if (commit.email) {
         userId = userIdMap[commit.email.toLowerCase()] || this.config.userId;

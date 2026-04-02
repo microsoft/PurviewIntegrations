@@ -62070,7 +62070,7 @@ class PurviewClient {
         if (!this.authToken) {
             throw new Error('Authentication token not set');
         }
-        this.logger.info(`Uploading signal for ${payload.contentMetadata.contentEntries[0]?.identifier}`);
+        this.logger.debug(`Uploading signal for ${payload.contentMetadata.contentEntries[0]?.identifier}`);
         const endpoint = `${this.baseUrl}/users/${payload.userId}/dataSecurityAndGovernance/activities/contentActivities`;
         let payloadString = JSON.stringify(payload, this.jsonReplacer);
         try {
@@ -62313,11 +62313,11 @@ class UserResolver {
         if (email) {
             const userId = this.emailToUserId.get(email.toLowerCase());
             if (userId) {
-                this.logger.info(`Resolved userId for email '${email}': ${userId} (from users.json mapping)`);
+                this.logger.debug(`Resolved userId for email '${email}': ${userId} (from users.json mapping)`);
                 return userId;
             }
         }
-        this.logger.info(`No users.json mapping found for email '${email ?? 'unknown'}', using default userId: ${this.defaultUserId}`);
+        this.logger.debug(`No users.json mapping found for email '${email ?? 'unknown'}', using default userId: ${this.defaultUserId}`);
         return this.defaultUserId;
     }
     /**
@@ -62400,7 +62400,7 @@ class FileProcessor {
             const cached = this.graphUserIdCache.get(email);
             if (cached) {
                 resolved[email] = cached;
-                this.logger.info(`Graph cache hit for '${email}': ${cached}`);
+                this.logger.debug(`Graph cache hit for '${email}': ${cached}`);
             }
             else {
                 needsGraph.push(email);
@@ -62417,7 +62417,7 @@ class FileProcessor {
                         const upn = user.userPrincipalName.toLowerCase();
                         this.graphUserIdCache.set(upn, user.id);
                         resolved[upn] = user.id;
-                        this.logger.info(`Graph API resolved '${upn}': ${user.id}`);
+                        this.logger.debug(`Graph API resolved '${upn}': ${user.id}`);
                     }
                 }
                 // Cache "not found" for emails that were queried but not in the response
@@ -62425,7 +62425,7 @@ class FileProcessor {
                 for (const email of needsGraph) {
                     if (!this.graphUserIdCache.has(email.toLowerCase())) {
                         this.graphUserIdCache.set(email.toLowerCase(), this.config.userId);
-                        this.logger.info(`Graph API: user '${email}' not found, caching as default userId`);
+                        this.logger.debug(`Graph API: user '${email}' not found, caching as default userId`);
                     }
                 }
             }
@@ -62466,12 +62466,12 @@ class FileProcessor {
             ? true
             : includePatterns.some(p => esm_minimatch(normalized, p, { dot: true }));
         if (!included) {
-            this.logger.info(`Excluding file '${path}' because it does not match any include patterns.`);
+            this.logger.debug(`Excluding file '${path}' because it does not match any include patterns.`);
             return false;
         }
         const excluded = excludePatterns.some(p => esm_minimatch(normalized, p, { dot: true }));
         if (excluded) {
-            this.logger.info(`Excluding file '${path}' due to exclude pattern match.`);
+            this.logger.debug(`Excluding file '${path}' due to exclude pattern match.`);
         }
         return !excluded;
     }
@@ -62515,7 +62515,7 @@ class FileProcessor {
                 const isBinary = isBinaryPath(filePath);
                 const encoding = isBinary ? 'base64' : 'utf-8';
                 if (isBinary) {
-                    this.logger.info(`Skipping binary file: ${filePath}`);
+                    this.logger.debug(`Skipping binary file: ${filePath}`);
                     continue;
                 }
                 const buffer = external_fs_.readFileSync(filePath);
@@ -62599,7 +62599,7 @@ class FileProcessor {
                 continue;
             }
             if (isBinaryPath(filePath)) {
-                this.logger.info(`Skipping binary file: ${filePath}`);
+                this.logger.debug(`Skipping binary file: ${filePath}`);
                 continue;
             }
             try {
@@ -62795,10 +62795,10 @@ class FileProcessor {
         }
         this.logger.info(`Processing commit ${commit.sha} with ${commit.files.length} changed file(s).`);
         const filteredCommitFiles = commit.files.filter((f) => this.shouldIncludePath(f.filename));
-        this.logger.info(`Commit ${commit.sha}: ${filteredCommitFiles.length}/${commit.files.length} files match the configured patterns.`);
+        this.logger.debug(`Commit ${commit.sha}: ${filteredCommitFiles.length}/${commit.files.length} files match the configured patterns.`);
         for (const file of filteredCommitFiles) {
             if (isBinaryPath(file.filename)) {
-                this.logger.info(`Skipping binary file: ${file.filename}`);
+                this.logger.debug(`Skipping binary file: ${file.filename}`);
                 continue;
             }
             let fileContent = file.patch || "";
@@ -63137,7 +63137,7 @@ class FileProcessor {
         const userIdMap = await this.resolveUserIds(allEmails);
         const result = [];
         for (const commit of commitsToProcess) {
-            this.logger.info(`Processing commit: ${commit.sha}`);
+            this.logger.debug(`Processing commit: ${commit.sha}`);
             let userId;
             if (commit.email) {
                 userId = userIdMap[commit.email.toLowerCase()] || this.config.userId;
@@ -63291,7 +63291,7 @@ class PayloadBuilder {
                     }
                     if (locationMatch && isIncluded && !isExcluded) {
                         shouldProcessFile = true;
-                        this.logger.info(`File ${file.path} is in scope.`);
+                        this.logger.debug(`File ${file.path} is in scope.`);
                         break;
                     }
                 }
@@ -63358,7 +63358,7 @@ class PayloadBuilder {
                 }
             }
         }
-        this.logger.info(`Scope check result: shouldProcess=${shouldProcess}, executionMode=${executionMode}, matchingActions=${dlpActions.length}`);
+        this.logger.debug(`Scope check result: shouldProcess=${shouldProcess}, executionMode=${executionMode}, matchingActions=${dlpActions.length}`);
         return { shouldProcess, dlpActions, executionMode };
     }
     /**
@@ -63404,7 +63404,7 @@ class PayloadBuilder {
         const conversationId = crypto.randomUUID() + PayloadBuilder.correlationIdSuffix;
         let seqNum = 0;
         for (const file of files) {
-            this.logger.info(`Building upload signal request for file: ${file.path}`);
+            this.logger.debug(`Building upload signal request for file: ${file.path}`);
             const content = file.content || `File: ${file.path} (${file.size} bytes)`;
             const userId = file.authorId || this.config.userId;
             const userEmail = file.authorEmail || prInfo.authorEmail;
@@ -64072,7 +64072,7 @@ class FullScanService {
                 await this.sendCommitContentActivity(commitGroup, prInfo, failedPayloads);
             }
             else {
-                this.logger.info(`Full scan: PCA completed for ${commitIdentifier}`);
+                this.logger.debug(`Full scan: PCA completed for ${commitIdentifier}`);
             }
         }
     }
@@ -64239,7 +64239,7 @@ class FullScanService {
             // Call per-user protection scopes (check cache first)
             let userPsResponse = userPsCache.get(userId);
             if (userPsResponse) {
-                this.logger.info(`Full scan: using cached PS response for user ${userId}`);
+                this.logger.debug(`Full scan: using cached PS response for user ${userId}`);
             }
             else {
                 userPsResponse = await this.purviewClient.searchUserProtectionScope(userId, psRequest);
@@ -64275,7 +64275,7 @@ class FullScanService {
                     break;
                 }
                 else {
-                    this.logger.info(`Full scan PCA batch completed for user ${userId}`);
+                    this.logger.debug(`Full scan PCA batch completed for user ${userId}`);
                 }
             }
         }
@@ -64387,6 +64387,7 @@ class GitHubActionsRunner {
             }
             // ─── Outputs & Summary ───
             const totalProcessed = fullScanFileCount + diffFileCount;
+            this.logger.info(`Completed: ${totalProcessed} file(s) processed, ${failedPayloads.length} failed, ${blockedFiles.length} blocked`);
             setOutput('processed-files', totalProcessed);
             setOutput('failed-requests', failedPayloads.length);
             setOutput('blocked-files', JSON.stringify(blockedFiles.map(bf => bf.filePath)));
@@ -64436,6 +64437,8 @@ class GitHubActionsRunner {
             this.logger.warn('No new commits to process');
             return 0;
         }
+        const totalFiles = commitGroups.reduce((sum, cg) => sum + cg.files.length, 0);
+        this.logger.info(`Diff flow: processing ${commitGroups.length} commit(s) with ${totalFiles} file(s) total`);
         const psRequest = this.payloadBuilder.buildProtectionScopesRequest();
         const requestLocation = psRequest.locations?.[0];
         if (!requestLocation) {
@@ -64460,7 +64463,7 @@ class GitHubActionsRunner {
         const { sha, files } = commitGroup;
         this.logger.info(`── Processing commit ${sha} with ${files.length} file(s) ──`);
         if (files.length === 0) {
-            this.logger.info(`Commit ${sha} has no matching files, skipping`);
+            this.logger.debug(`Commit ${sha} has no matching files, skipping`);
             return 0;
         }
         // Group files by userId
@@ -64476,14 +64479,14 @@ class GitHubActionsRunner {
             await this.processUserFiles(userId, userFiles, ctx);
         }
         await this.sendCommitRequest(commitGroup, ctx);
-        this.logger.info(`Commit ${sha} processed successfully`);
+        this.logger.debug(`Commit ${sha} processed successfully`);
         return files.length;
     }
     // ──────────────────────────────────────────────────────────────────
     //  Per-user file processing
     // ──────────────────────────────────────────────────────────────────
     async processUserFiles(userId, userFiles, ctx) {
-        this.logger.info(`Processing ${userFiles.length} file(s) for user ${userId}`);
+        this.logger.debug(`Processing ${userFiles.length} file(s) for user ${userId}`);
         const psResult = await this.resolveUserPsWithCache(userId, ctx);
         if (!psResult) {
             await this.sendContentActivities(userFiles, ctx.prInfo, ctx.failedPayloads);
@@ -64493,7 +64496,7 @@ class GitHubActionsRunner {
         // Check applicable scopes
         const scopeCheck = this.payloadBuilder.checkApplicableScopes(psResponse.value, Activity.uploadText, ctx.requestLocation);
         if (!scopeCheck.shouldProcess) {
-            this.logger.info(`No matching scopes for user ${userId}, routing ${userFiles.length} file(s) to contentActivities`);
+            this.logger.debug(`No matching scopes for user ${userId}, routing ${userFiles.length} file(s) to contentActivities`);
             await this.sendContentActivities(userFiles, ctx.prInfo, ctx.failedPayloads);
             return;
         }
@@ -64505,7 +64508,7 @@ class GitHubActionsRunner {
         }
     }
     async processFilesInline(userId, userFiles, scopeIdentifier, ctx) {
-        this.logger.info(`evaluateInline: calling processContent for ${userFiles.length} file(s), user ${userId}`);
+        this.logger.debug(`evaluateInline: calling processContent for ${userFiles.length} file(s), user ${userId}`);
         const conversationId = crypto.randomUUID();
         let seqNum = 0;
         for (const file of userFiles) {
@@ -64550,7 +64553,7 @@ class GitHubActionsRunner {
         }
     }
     async processFilesOffline(userId, userFiles, ctx) {
-        this.logger.info(`evaluateOffline: sending ${userFiles.length} file(s) to PCA batch for user ${userId}`);
+        this.logger.debug(`evaluateOffline: sending ${userFiles.length} file(s) to PCA batch for user ${userId}`);
         const pcaBatchRequests = this.payloadBuilder.buildProcessContentBatchRequest(userFiles);
         for (const pcaBatchRequest of pcaBatchRequests) {
             const pcaResult = await this.purviewClient.processContentAsync(pcaBatchRequest);
@@ -64575,7 +64578,7 @@ class GitHubActionsRunner {
         }
         let psApiResponse = ctx.userPsCache.get(userId);
         if (psApiResponse) {
-            this.logger.info(`Using cached PS response for user ${userId}`);
+            this.logger.debug(`Using cached PS response for user ${userId}`);
         }
         else {
             psApiResponse = await this.purviewClient.searchUserProtectionScope(userId, ctx.psRequest);
@@ -64605,7 +64608,7 @@ class GitHubActionsRunner {
     async sendCommitRequest(commitGroup, ctx) {
         const commitUserId = commitGroup.authorId || this.config.userId;
         const commitIdentifier = `commit:${commitGroup.sha}`;
-        this.logger.info(`Sending commit-level request for ${commitIdentifier}, user ${commitUserId}`);
+        this.logger.debug(`Sending commit-level request for ${commitIdentifier}, user ${commitUserId}`);
         const psResult = await this.resolveUserPsWithCache(commitUserId, ctx);
         if (!psResult) {
             await this.sendCommitContentActivity(commitGroup, ctx.prInfo, ctx.failedPayloads);
@@ -64908,11 +64911,11 @@ async function validateInputs() {
             : '';
         const isExternalWorkflowRepo = !!workflowRepo && workflowRepoFullName !== targetRepoFullName;
         // Debug: log workflow repo resolution details
-        logger.info(`GITHUB_WORKFLOW_REF = '${process.env['GITHUB_WORKFLOW_REF'] || ''}'`);
-        logger.info(`Parsed workflowRepo = ${workflowRepo ? JSON.stringify(workflowRepo) : 'undefined'}`);
-        logger.info(`Target repo = '${targetRepoFullName}', Workflow repo = '${workflowRepoFullName}'`);
-        logger.info(`isExternalWorkflowRepo = ${isExternalWorkflowRepo}`);
-        logger.info(`stateRepoToken present = ${!!stateRepoToken}`);
+        logger.debug(`GITHUB_WORKFLOW_REF = '${process.env['GITHUB_WORKFLOW_REF'] || ''}'`);
+        logger.debug(`Parsed workflowRepo = ${workflowRepo ? JSON.stringify(workflowRepo) : 'undefined'}`);
+        logger.debug(`Target repo = '${targetRepoFullName}', Workflow repo = '${workflowRepoFullName}'`);
+        logger.debug(`isExternalWorkflowRepo = ${isExternalWorkflowRepo}`);
+        logger.debug(`stateRepoToken present = ${!!stateRepoToken}`);
         let parsed;
         // Determine the best token for fetching users.json from the workflow repo.
         // Prefer state-repo-token, fall back to GITHUB_TOKEN (works for public repos

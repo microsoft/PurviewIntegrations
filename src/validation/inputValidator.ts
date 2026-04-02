@@ -40,11 +40,11 @@ export async function validateInputs(): Promise<ActionConfig> {
       !!workflowRepo && workflowRepoFullName !== targetRepoFullName;
 
     // Debug: log workflow repo resolution details
-    logger.info(`GITHUB_WORKFLOW_REF = '${process.env['GITHUB_WORKFLOW_REF'] || ''}'`);
-    logger.info(`Parsed workflowRepo = ${workflowRepo ? JSON.stringify(workflowRepo) : 'undefined'}`);
-    logger.info(`Target repo = '${targetRepoFullName}', Workflow repo = '${workflowRepoFullName}'`);
-    logger.info(`isExternalWorkflowRepo = ${isExternalWorkflowRepo}`);
-    logger.info(`stateRepoToken present = ${!!stateRepoToken}`);
+    logger.debug(`GITHUB_WORKFLOW_REF = '${process.env['GITHUB_WORKFLOW_REF'] || ''}'`);
+    logger.debug(`Parsed workflowRepo = ${workflowRepo ? JSON.stringify(workflowRepo) : 'undefined'}`);
+    logger.debug(`Target repo = '${targetRepoFullName}', Workflow repo = '${workflowRepoFullName}'`);
+    logger.debug(`isExternalWorkflowRepo = ${isExternalWorkflowRepo}`);
+    logger.debug(`stateRepoToken present = ${!!stateRepoToken}`);
 
     let parsed: UsersConfig;
 

@@ -122,7 +122,7 @@ export class PayloadBuilder {
 
           if (locationMatch && isIncluded && !isExcluded) {
             shouldProcessFile = true;
-            this.logger.info(`File ${file.path} is in scope.`);
+            this.logger.debug(`File ${file.path} is in scope.`);
             break;
           }
         }
@@ -203,7 +203,7 @@ export class PayloadBuilder {
       }
     }
 
-    this.logger.info(
+    this.logger.debug(
       `Scope check result: shouldProcess=${shouldProcess}, executionMode=${executionMode}, matchingActions=${dlpActions.length}`
     );
 
@@ -260,7 +260,7 @@ export class PayloadBuilder {
     let seqNum = 0;
 
     for (const file of files) {
-      this.logger.info(`Building upload signal request for file: ${file.path}`);
+      this.logger.debug(`Building upload signal request for file: ${file.path}`);
 
       const content = file.content || `File: ${file.path} (${file.size} bytes)`;
       const userId = file.authorId || this.config.userId;

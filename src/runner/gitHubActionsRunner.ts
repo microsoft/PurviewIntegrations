@@ -95,6 +95,7 @@ export class GitHubActionsRunner {
 
       // ─── Outputs & Summary ───
       const totalProcessed = fullScanFileCount + diffFileCount;
+      this.logger.info(`Completed: ${totalProcessed} file(s) processed, ${failedPayloads.length} failed, ${blockedFiles.length} blocked`);
       core.setOutput('processed-files', totalProcessed);
       core.setOutput('failed-requests', failedPayloads.length);
       core.setOutput('blocked-files', JSON.stringify(blockedFiles.map(bf => bf.filePath)));
@@ -158,6 +159,9 @@ export class GitHubActionsRunner {
       return 0;
     }
 
+    const totalFiles = commitGroups.reduce((sum, cg) => sum + cg.files.length, 0);
+    this.logger.info(`Diff flow: processing ${commitGroups.length} commit(s) with ${totalFiles} file(s) total`);
+
     const psRequest = this.payloadBuilder.buildProtectionScopesRequest();
     const requestLocation = psRequest.locations?.[0];
     if (!requestLocation) {
@@ -188,7 +192,7 @@ export class GitHubActionsRunner {
     this.logger.info(`── Processing commit ${sha} with ${files.length} file(s) ──`);
 
     if (files.length === 0) {
-      this.logger.info(`Commit ${sha} has no matching files, skipping`);
+      this.logger.debug(`Commit ${sha} has no matching files, skipping`);
       return 0;
     }
 
@@ -209,7 +213,7 @@ export class GitHubActionsRunner {
 
     await this.sendCommitRequest(commitGroup, ctx);
 
-    this.logger.info(`Commit ${sha} processed successfully`);
+    this.logger.debug(`Commit ${sha} processed successfully`);
     return files.length;
   }
 
@@ -222,7 +226,7 @@ export class GitHubActionsRunner {
     userFiles: FileMetadata[],
     ctx: DiffPathContext
   ): Promise<void> {
-    this.logger.info(`Processing ${userFiles.length} file(s) for user ${userId}`);
+    this.logger.debug(`Processing ${userFiles.length} file(s) for user ${userId}`);
 
     const psResult = await this.resolveUserPsWithCache(userId, ctx);
     if (!psResult) {
@@ -240,7 +244,7 @@ export class GitHubActionsRunner {
     );
 
     if (!scopeCheck.shouldProcess) {
-      this.logger.info(`No matching scopes for user ${userId}, routing ${userFiles.length} file(s) to contentActivities`);
+      this.logger.debug(`No matching scopes for user ${userId}, routing ${userFiles.length} file(s) to contentActivities`);
       await this.sendContentActivities(userFiles, ctx.prInfo, ctx.failedPayloads);
       return;
     }
@@ -258,7 +262,7 @@ export class GitHubActionsRunner {
     scopeIdentifier: string,
     ctx: DiffPathContext
   ): Promise<void> {
-    this.logger.info(`evaluateInline: calling processContent for ${userFiles.length} file(s), user ${userId}`);
+    this.logger.debug(`evaluateInline: calling processContent for ${userFiles.length} file(s), user ${userId}`);
 
     const conversationId = crypto.randomUUID();
     let seqNum = 0;
@@ -317,7 +321,7 @@ export class GitHubActionsRunner {
     userFiles: FileMetadata[],
     ctx: DiffPathContext
   ): Promise<void> {
-    this.logger.info(`evaluateOffline: sending ${userFiles.length} file(s) to PCA batch for user ${userId}`);
+    this.logger.debug(`evaluateOffline: sending ${userFiles.length} file(s) to PCA batch for user ${userId}`);
     const pcaBatchRequests = this.payloadBuilder.buildProcessContentBatchRequest(userFiles);
     for (const pcaBatchRequest of pcaBatchRequests) {
       const pcaResult = await this.purviewClient.processContentAsync(pcaBatchRequest);
@@ -349,7 +353,7 @@ export class GitHubActionsRunner {
 
     let psApiResponse = ctx.userPsCache.get(userId);
     if (psApiResponse) {
-      this.logger.info(`Using cached PS response for user ${userId}`);
+      this.logger.debug(`Using cached PS response for user ${userId}`);
     } else {
       psApiResponse = await this.purviewClient.searchUserProtectionScope(userId, ctx.psRequest);
       if (psApiResponse.success) {
@@ -382,7 +386,7 @@ export class GitHubActionsRunner {
   private async sendCommitRequest(commitGroup: CommitFiles, ctx: DiffPathContext): Promise<void> {
     const commitUserId = commitGroup.authorId || this.config.userId;
     const commitIdentifier = `commit:${commitGroup.sha}`;
-    this.logger.info(`Sending commit-level request for ${commitIdentifier}, user ${commitUserId}`);
+    this.logger.debug(`Sending commit-level request for ${commitIdentifier}, user ${commitUserId}`);
 
     const psResult = await this.resolveUserPsWithCache(commitUserId, ctx);
     if (!psResult) {
