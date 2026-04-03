@@ -497,6 +497,7 @@ export class FileProcessor {
       title: title,
       url: url,
       prNumber: pr["number"],
+      body: pr["body"] || undefined,
     };
   }
 

@@ -1,6 +1,5 @@
-import * as crypto from 'crypto';
 import * as github from '@actions/github';
-import { ActionConfig, FileMetadata, StateTrackingInfo, ApiResponse, ProtectionScopesResponse, PrInfo, ProtectionScopesRequest, CommitFiles, ProcessContentBatchRequest } from '../config/types';
+import { ActionConfig, FileMetadata, StateTrackingInfo, ApiResponse, ProtectionScopesResponse, PrInfo, ProtectionScopesRequest, CommitFiles } from '../config/types';
 import { FileProcessor } from '../file/fileProcessor';
 import { PurviewClient } from '../api/purviewClient';
 import { PayloadBuilder } from '../payload/payloadBuilder';
@@ -213,28 +212,31 @@ export class FullScanService {
         continue;
       }
 
-      // Send via PCA batch
-      const conversationId = crypto.randomUUID() + '@GA';
-      const pcaItem = this.payloadBuilder.buildCommitProcessContentBatchItem(commitGroup, conversationId, 0);
-      const pcaBatch: ProcessContentBatchRequest = { processContentRequests: [pcaItem] };
-      const pcaResult = await this.purviewClient.processContentAsync(pcaBatch);
+      // Send via PCA batch (combines and chunks as needed)
+      const pcaBatches = this.payloadBuilder.buildCommitProcessContentBatchRequest([commitGroup]);
+      for (const pcaBatch of pcaBatches) {
+        const pcaResult = await this.purviewClient.processContentAsync(pcaBatch);
 
-      if (!pcaResult.success) {
-        this.logger.error(`PCA failed for commit ${commitGroup.sha}: ${pcaResult.error}. Falling back to contentActivities.`);
-        failedPayloads.push(`pca-fullscan-commit-${commitGroup.sha}`);
-        await this.sendCommitContentActivity(commitGroup, prInfo, failedPayloads);
-      } else {
-        this.logger.debug(`Full scan: PCA completed for ${commitIdentifier}`);
+        if (!pcaResult.success) {
+          this.logger.error(`PCA failed for commit ${commitGroup.sha}: ${pcaResult.error}. Falling back to contentActivities.`);
+          failedPayloads.push(`pca-fullscan-commit-${commitGroup.sha}`);
+          await this.sendCommitContentActivity(commitGroup, prInfo, failedPayloads);
+          break;
+        } else {
+          this.logger.debug(`Full scan: PCA completed for ${commitIdentifier}`);
+        }
       }
     }
   }
 
   private async sendCommitContentActivity(commitGroup: CommitFiles, prInfo: PrInfo, failedPayloads: string[]): Promise<void> {
-    const req = this.payloadBuilder.buildCommitUploadSignalRequest(commitGroup, prInfo);
-    const result = await this.purviewClient.uploadSignal(req);
-    if (!result.success) {
-      this.logger.error(`ContentActivities upload failed for commit ${commitGroup.sha}: ${result.error}`);
-      failedPayloads.push(`ca-fullscan-commit-${commitGroup.sha}`);
+    const requests = this.payloadBuilder.buildCommitUploadSignalRequest(commitGroup, prInfo);
+    for (const req of requests) {
+      const result = await this.purviewClient.uploadSignal(req);
+      if (!result.success) {
+        this.logger.error(`ContentActivities upload failed for commit ${commitGroup.sha}: ${result.error}`);
+        failedPayloads.push(`ca-fullscan-commit-${commitGroup.sha}`);
+      }
     }
   }
 

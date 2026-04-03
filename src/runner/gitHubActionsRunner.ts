@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { ActionConfig, FileMetadata, BlockedFileResult, ExecutionMode, Activity, ProcessContentResponse, ApiResponse, ProtectionScopesResponse, CommitFiles, ProcessContentBatchRequest, PrInfo, ProtectionScopesRequest, PolicyLocation } from '../config/types';
+import { ActionConfig, FileMetadata, BlockedFileResult, ExecutionMode, Activity, ProcessContentResponse, ApiResponse, ProtectionScopesResponse, CommitFiles, PrInfo, ProtectionScopesRequest, PolicyLocation } from '../config/types';
 import { AuthenticationService } from '../auth/authenticationService';
 import { FileProcessor } from '../file/fileProcessor';
 import { PurviewClient } from '../api/purviewClient';
@@ -64,6 +64,7 @@ export class GitHubActionsRunner {
       this.logger.info('Processing repository files');
       const prInfo = await this.fileProcessor.getPrInfo();
       this.payloadBuilder.prNumber = prInfo.prNumber;
+      this.payloadBuilder.prDescription = prInfo.body;
 
       const failedPayloads: string[] = [];
       const blockedFiles: BlockedFileResult[] = [];
@@ -407,36 +408,40 @@ export class GitHubActionsRunner {
 
     if (scopeCheck.executionMode === ExecutionMode.evaluateInline) {
       const conversationId = crypto.randomUUID();
-      const pcRequest = this.payloadBuilder.buildCommitProcessContentRequest(commitGroup, conversationId, 0);
-      const pcResponse = await this.purviewClient.processContent(commitUserId, pcRequest, psResult.scopeIdentifier, true);
+      const pcRequests = this.payloadBuilder.buildCommitProcessContentRequest(commitGroup, conversationId, 0);
 
-      if (!pcResponse.success) {
-        this.logger.error(`PC failed for commit ${commitGroup.sha}: ${pcResponse.error}. Falling back to contentActivities.`);
-        ctx.failedPayloads.push(`pc-commit-${commitGroup.sha}`);
-        await this.sendCommitContentActivity(commitGroup, ctx.prInfo, ctx.failedPayloads);
-        return;
-      }
+      for (const pcRequest of pcRequests) {
+        const pcResponse = await this.purviewClient.processContent(commitUserId, pcRequest, psResult.scopeIdentifier, true);
 
-      const pcData = pcResponse.data as ProcessContentResponse;
-      if (pcData && isBlocked(pcData)) {
-        const blockingActions = getBlockingActions(pcData);
-        this.logger.warn(`BLOCKED: Commit ${commitGroup.sha} blocked by ${blockingActions.length} policy action(s)`);
-        ctx.blockedFiles.push({
-          filePath: commitIdentifier,
-          userId: commitUserId,
-          policyActions: blockingActions,
-        });
+        if (!pcResponse.success) {
+          this.logger.error(`PC failed for commit ${commitGroup.sha}: ${pcResponse.error}. Falling back to contentActivities.`);
+          ctx.failedPayloads.push(`pc-commit-${commitGroup.sha}`);
+          await this.sendCommitContentActivity(commitGroup, ctx.prInfo, ctx.failedPayloads);
+          return;
+        }
+
+        const pcData = pcResponse.data as ProcessContentResponse;
+        if (pcData && isBlocked(pcData)) {
+          const blockingActions = getBlockingActions(pcData);
+          this.logger.warn(`BLOCKED: Commit ${commitGroup.sha} blocked by ${blockingActions.length} policy action(s)`);
+          ctx.blockedFiles.push({
+            filePath: commitIdentifier,
+            userId: commitUserId,
+            policyActions: blockingActions,
+          });
+        }
       }
     } else {
-      const conversationId = crypto.randomUUID() + '@GA';
-      const pcaItem = this.payloadBuilder.buildCommitProcessContentBatchItem(commitGroup, conversationId, 0);
-      const pcaBatch: ProcessContentBatchRequest = { processContentRequests: [pcaItem] };
-      const pcaResult = await this.purviewClient.processContentAsync(pcaBatch);
+      const pcaBatches = this.payloadBuilder.buildCommitProcessContentBatchRequest([commitGroup]);
+      for (const pcaBatch of pcaBatches) {
+        const pcaResult = await this.purviewClient.processContentAsync(pcaBatch);
 
-      if (!pcaResult.success) {
-        this.logger.error(`PCA failed for commit ${commitGroup.sha}: ${pcaResult.error}. Falling back to contentActivities.`);
-        ctx.failedPayloads.push(`pca-commit-${commitGroup.sha}`);
-        await this.sendCommitContentActivity(commitGroup, ctx.prInfo, ctx.failedPayloads);
+        if (!pcaResult.success) {
+          this.logger.error(`PCA failed for commit ${commitGroup.sha}: ${pcaResult.error}. Falling back to contentActivities.`);
+          ctx.failedPayloads.push(`pca-commit-${commitGroup.sha}`);
+          await this.sendCommitContentActivity(commitGroup, ctx.prInfo, ctx.failedPayloads);
+          break;
+        }
       }
     }
   }
@@ -453,11 +458,13 @@ export class GitHubActionsRunner {
   }
 
   private async sendCommitContentActivity(commitGroup: CommitFiles, prInfo: PrInfo, failedPayloads: string[]): Promise<void> {
-    const req = this.payloadBuilder.buildCommitUploadSignalRequest(commitGroup, prInfo);
-    const result = await this.purviewClient.uploadSignal(req);
-    if (!result.success) {
-      this.logger.error(`ContentActivities upload failed for commit ${commitGroup.sha}: ${result.error}`);
-      failedPayloads.push(`ca-commit-${commitGroup.sha}`);
+    const requests = this.payloadBuilder.buildCommitUploadSignalRequest(commitGroup, prInfo);
+    for (const req of requests) {
+      const result = await this.purviewClient.uploadSignal(req);
+      if (!result.success) {
+        this.logger.error(`ContentActivities upload failed for commit ${commitGroup.sha}: ${result.error}`);
+        failedPayloads.push(`ca-commit-${commitGroup.sha}`);
+      }
     }
   }
 

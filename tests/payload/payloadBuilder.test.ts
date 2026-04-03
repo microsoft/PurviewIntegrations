@@ -503,17 +503,19 @@ describe('PayloadBuilder', () => {
       timestamp: '2026-01-01T00:00:00Z',
     };
 
-    it('buildCommitProcessContentBatchItem includes userEmail', () => {
-      const item = builder.buildCommitProcessContentBatchItem(commitGroup as any, 'conv-1', 0);
-      expect(item.userId).toBe('author-1');
-      expect(item.userEmail).toBe('author@test.com');
+    it('buildCommitProcessContentBatchItems includes userEmail', () => {
+      const items = builder.buildCommitProcessContentBatchItems(commitGroup as any, 'conv-1', 0);
+      expect(items).toHaveLength(1);
+      expect(items[0]!.userId).toBe('author-1');
+      expect(items[0]!.userEmail).toBe('author@test.com');
     });
 
     it('buildCommitUploadSignalRequest includes userEmail', () => {
       const prInfo = createPrInfo();
-      const req = builder.buildCommitUploadSignalRequest(commitGroup as any, prInfo);
-      expect(req.userId).toBe('author-1');
-      expect(req.userEmail).toBe('author@test.com');
+      const requests = builder.buildCommitUploadSignalRequest(commitGroup as any, prInfo);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.userId).toBe('author-1');
+      expect(requests[0]!.userEmail).toBe('author@test.com');
     });
 
     it('buildCommitContentToProcess agent uses UPN as name', () => {

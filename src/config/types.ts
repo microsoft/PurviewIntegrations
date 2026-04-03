@@ -311,6 +311,7 @@ export interface PrInfo {
   title: string,
   url: string | null | undefined,
   prNumber?: number,
+  body?: string,
 }
 
 export interface GraphUserInfoContainer {

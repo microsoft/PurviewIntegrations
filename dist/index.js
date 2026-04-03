@@ -62767,6 +62767,7 @@ class FileProcessor {
             title: title,
             url: url,
             prNumber: pr["number"],
+            body: pr["body"] || undefined,
         };
     }
     async getFilesForCommit(commitSha, authorId, committerId) {
@@ -63191,7 +63192,8 @@ class FileProcessor {
 class PayloadBuilder {
     config;
     logger;
-    maxPayloadSize = 1024 * 1024 * 3; // 3MB
+    maxContentSize = 1024 * 1024 * 3; // 3 MB — max for the content data field
+    maxRequestSize = 1024 * 1024 * 3.7; // 3.7 MB — max for the complete request
     static domain = "github.com";
     static scopeActivity = "uploadText";
     static appName = "GitHub";
@@ -63201,6 +63203,8 @@ class PayloadBuilder {
     isFullScan = false;
     /** PR number, set when processing a pull request event. */
     prNumber;
+    /** PR description/body, set when processing a pull request event. */
+    prDescription;
     constructor(config) {
         this.config = config;
         this.logger = new logger_Logger('PayloadBuilder');
@@ -63369,18 +63373,20 @@ class PayloadBuilder {
         const singleCTP = this.createContentToProcess(file, conversationId, messageId);
         const singleRequest = { contentToProcess: singleCTP };
         const requestSize = JSON.stringify(singleRequest).length;
-        if (requestSize <= this.maxPayloadSize) {
+        if (requestSize <= this.maxRequestSize) {
             return [singleRequest];
         }
-        // Split content into chunks that fit within maxPayloadSize
+        // Split content into chunks that fit within maxContentSize
         const overhead = requestSize - content.length;
-        const maxContentPerChunk = this.maxPayloadSize - overhead - 100; // safety margin
+        const maxContentPerChunk = this.maxContentSize - overhead - 100; // safety margin
         const requests = [];
+        let partNumber = 1;
         for (let i = 0; i < content.length; i += maxContentPerChunk) {
             const chunk = content.substring(i, Math.min(i + maxContentPerChunk, content.length));
             const isLastChunk = i + maxContentPerChunk >= content.length;
-            const chunkCTP = this.createContentToProcess(file, conversationId, messageId + requests.length, !isLastChunk, chunk);
+            const chunkCTP = this.createContentToProcess(file, conversationId, messageId + requests.length, !isLastChunk, chunk, partNumber);
             requests.push({ contentToProcess: chunkCTP });
+            partNumber++;
         }
         this.logger.info(`Split file ${file.path} into ${requests.length} processContent request(s)`);
         return requests;
@@ -63410,7 +63416,7 @@ class PayloadBuilder {
             const userEmail = file.authorEmail || prInfo.authorEmail;
             const singleCTP = this.createContentToProcess(file, conversationId, seqNum);
             const singleSize = JSON.stringify(singleCTP).length + 200; // account for wrapper fields
-            if (singleSize <= this.maxPayloadSize) {
+            if (singleSize <= this.maxRequestSize) {
                 requests.push({
                     id: crypto.randomUUID() + PayloadBuilder.correlationIdSuffix,
                     userId,
@@ -63423,11 +63429,12 @@ class PayloadBuilder {
             else {
                 // Split content into chunks
                 const overhead = singleSize - content.length;
-                const maxContentPerChunk = this.maxPayloadSize - overhead - 100;
+                const maxContentPerChunk = this.maxContentSize - overhead - 100;
+                let partNumber = 1;
                 for (let i = 0; i < content.length; i += maxContentPerChunk) {
                     const chunk = content.substring(i, Math.min(i + maxContentPerChunk, content.length));
                     const isLastChunk = i + maxContentPerChunk >= content.length;
-                    const chunkCTP = this.createContentToProcess(file, conversationId, seqNum, !isLastChunk, chunk);
+                    const chunkCTP = this.createContentToProcess(file, conversationId, seqNum, !isLastChunk, chunk, partNumber);
                     requests.push({
                         id: crypto.randomUUID() + PayloadBuilder.correlationIdSuffix,
                         userId,
@@ -63436,6 +63443,7 @@ class PayloadBuilder {
                         contentMetadata: chunkCTP,
                     });
                     seqNum++;
+                    partNumber++;
                 }
                 this.logger.info(`Split file ${file.path} into multiple upload signal request(s)`);
             }
@@ -63458,18 +63466,19 @@ class PayloadBuilder {
                 requestId: crypto.randomUUID(),
             };
             const itemSize = JSON.stringify(singleItem).length;
-            if (itemSize <= this.maxPayloadSize) {
+            if (itemSize <= this.maxRequestSize) {
                 allItems.push(singleItem);
                 seqNum++;
             }
             else {
                 // Single file exceeds limit — split its content into chunks
                 const overhead = itemSize - content.length;
-                const maxContentPerChunk = this.maxPayloadSize - overhead - 100;
+                const maxContentPerChunk = this.maxContentSize - overhead - 100;
+                let partNumber = 1;
                 for (let i = 0; i < content.length; i += maxContentPerChunk) {
                     const chunk = content.substring(i, Math.min(i + maxContentPerChunk, content.length));
                     const isLastChunk = i + maxContentPerChunk >= content.length;
-                    const chunkCTP = this.createContentToProcess(file, conversationId, seqNum, !isLastChunk, chunk);
+                    const chunkCTP = this.createContentToProcess(file, conversationId, seqNum, !isLastChunk, chunk, partNumber);
                     allItems.push({
                         contentToProcess: chunkCTP,
                         userId,
@@ -63477,17 +63486,18 @@ class PayloadBuilder {
                         requestId: crypto.randomUUID(),
                     });
                     seqNum++;
+                    partNumber++;
                 }
             }
         }
-        // Split items into batches that fit within maxPayloadSize
+        // Split items into batches that fit within maxRequestSize
         const batches = [];
         let currentItems = [];
         let currentSize = 0;
-        const batchOverhead = 50;
+        const batchOverhead = 200;
         for (const item of allItems) {
             const itemSize = JSON.stringify(item).length;
-            if (currentItems.length > 0 && currentSize + itemSize + batchOverhead > this.maxPayloadSize) {
+            if (currentItems.length > 0 && currentSize + itemSize + batchOverhead > this.maxRequestSize) {
                 batches.push({ processContentRequests: currentItems });
                 currentItems = [];
                 currentSize = 0;
@@ -63500,7 +63510,7 @@ class PayloadBuilder {
         }
         return batches;
     }
-    createContentToProcess(file, conversationId, messageId, isTruncated = false, contentOverride) {
+    createContentToProcess(file, conversationId, messageId, isTruncated = false, contentOverride, partNumber) {
         let userId = file.authorId;
         const usingDefaultUser = !userId || userId === this.config.userId;
         if (!userId) {
@@ -63535,7 +63545,7 @@ class PayloadBuilder {
             content: fileContent,
             accessedResources_v2: [{
                     identifier: this.buildResourceIdentifier(file.sha || file.path),
-                    name: this.buildFileResourceName(file.path),
+                    name: this.buildFileResourceName(file.path) + (partNumber != null ? ` Part: ${partNumber}` : ''),
                     url: fileUrl,
                     accessType: this.mapChangeTypeToAccessType(file.typeOfChange),
                     status: 'success',
@@ -63567,9 +63577,15 @@ class PayloadBuilder {
      * Build the text content representing a git commit's metadata.
      */
     buildCommitContentText(commitGroup) {
-        const lines = [
-            `Commit: ${commitGroup.sha}`,
-        ];
+        const lines = [];
+        if (this.prNumber != null) {
+            lines.push(`PR: #${this.prNumber}`);
+            if (this.prDescription) {
+                lines.push(`Description: ${this.prDescription}`);
+            }
+            lines.push('');
+        }
+        lines.push(`Commit: ${commitGroup.sha}`);
         if (commitGroup.message) {
             lines.push(`Message: ${commitGroup.message}`);
         }
@@ -63594,17 +63610,40 @@ class PayloadBuilder {
         return lines.join('\n');
     }
     /**
-     * Build a ContentToProcess for a git commit (commit-level metadata request).
+     * Build the accessedResources array for a commit.
      */
-    buildCommitContentToProcess(commitGroup, conversationId, sequenceNumber) {
+    buildCommitAccessedResources(commitGroup, partSuffix = '') {
+        const repoBaseUrl = `https://${PayloadBuilder.domain}/${this.config.repository.owner}/${this.config.repository.repo}`;
+        const commitUrl = `${repoBaseUrl}/commit/${commitGroup.sha}`;
+        const resources = [{
+                identifier: this.buildResourceIdentifier(commitGroup.sha),
+                name: `Repo: ${this.config.repository.repo} Commit: ${commitGroup.sha}${partSuffix}`,
+                url: commitUrl,
+                accessType: 'write',
+                status: 'success',
+                isCrossPromptInjectionDetected: false,
+            }];
+        for (const file of commitGroup.files) {
+            resources.push({
+                identifier: this.buildResourceIdentifier(file.sha || file.path),
+                name: this.buildFileResourceName(file.path) + partSuffix,
+                url: `${repoBaseUrl}/blob/${this.config.repository.branch}/${file.path}`,
+                accessType: this.mapChangeTypeToAccessType(file.typeOfChange),
+                status: 'success',
+                isCrossPromptInjectionDetected: false,
+            });
+        }
+        return resources;
+    }
+    /**
+     * Build a ContentToProcess for a git commit (commit-level metadata request).
+     * Accepts optional accessedResources override for splitting large resource arrays.
+     */
+    buildCommitContentToProcess(commitGroup, conversationId, sequenceNumber, isTruncated = false, contentOverride, partNumber, accessedResourcesOverride) {
         const now = new Date().toISOString();
-        const commitContent = this.buildCommitContentText(commitGroup);
+        const commitContent = contentOverride ?? this.buildCommitContentText(commitGroup);
         const commitIdentifier = `commit:${commitGroup.sha}`;
         const usingDefaultUser = !commitGroup.authorId || commitGroup.authorId === this.config.userId;
-        const fileContent = {
-            "@odata.type": "microsoft.graph.textContent",
-            data: commitContent,
-        };
         const agents = [];
         if (commitGroup.committerId || commitGroup.committerEmail) {
             agents.push({
@@ -63613,26 +63652,12 @@ class PayloadBuilder {
                 version: this.isFullScan ? 'fullscan' : (usingDefaultUser ? this.config.userId : undefined),
             });
         }
-        const repoBaseUrl = `https://${PayloadBuilder.domain}/${this.config.repository.owner}/${this.config.repository.repo}`;
-        const commitUrl = `${repoBaseUrl}/commit/${commitGroup.sha}`;
-        const accessedResources = [{
-                identifier: this.buildResourceIdentifier(commitGroup.sha),
-                name: `Repo: ${this.config.repository.repo} Commit: ${commitGroup.sha}`,
-                url: commitUrl,
-                accessType: 'write',
-                status: 'success',
-                isCrossPromptInjectionDetected: false,
-            }];
-        for (const file of commitGroup.files) {
-            accessedResources.push({
-                identifier: this.buildResourceIdentifier(file.sha || file.path),
-                name: this.buildFileResourceName(file.path),
-                url: `${repoBaseUrl}/blob/${this.config.repository.branch}/${file.path}`,
-                accessType: this.mapChangeTypeToAccessType(file.typeOfChange),
-                status: 'success',
-                isCrossPromptInjectionDetected: false,
-            });
-        }
+        const partSuffix = partNumber != null ? ` Part: ${partNumber}` : '';
+        const accessedResources = accessedResourcesOverride ?? this.buildCommitAccessedResources(commitGroup, partSuffix);
+        const textContent = {
+            "@odata.type": "microsoft.graph.textContent",
+            data: commitContent,
+        };
         const entry = {
             "@odata.type": "microsoft.graph.processConversationMetadata",
             identifier: commitIdentifier,
@@ -63640,18 +63665,16 @@ class PayloadBuilder {
             correlationId: conversationId,
             sequenceNumber,
             length: commitContent.length,
-            isTruncated: false,
+            isTruncated,
             createdDateTime: commitGroup.timestamp || now,
             modifiedDateTime: commitGroup.timestamp || now,
-            content: fileContent,
+            content: textContent,
             accessedResources_v2: accessedResources,
             ...(agents.length > 0 ? { agents } : {}),
         };
         return {
             contentEntries: [entry],
-            activityMetadata: {
-                activity: Activity.uploadText,
-            },
+            activityMetadata: { activity: Activity.uploadText },
             deviceMetadata: {},
             integratedAppMetadata: {
                 name: PayloadBuilder.appName,
@@ -63668,39 +63691,181 @@ class PayloadBuilder {
         };
     }
     /**
-     * Build a per-user ProcessContentRequest for a git commit (inline PC).
+     * Build per-user ProcessContentRequest(s) for a git commit (inline PC).
+     * Splits by content first, then by accessedResources if still too large.
      */
     buildCommitProcessContentRequest(commitGroup, conversationId, sequenceNumber) {
         const ctp = this.buildCommitContentToProcess(commitGroup, conversationId, sequenceNumber);
-        return { contentToProcess: ctp };
+        const singleRequest = { contentToProcess: ctp };
+        const requestSize = JSON.stringify(singleRequest).length;
+        if (requestSize <= this.maxRequestSize) {
+            return [singleRequest];
+        }
+        // Split needed — delegate to the common commit splitting helper
+        return this.splitCommitRequests(commitGroup, conversationId, sequenceNumber, (c) => ({ contentToProcess: c }));
     }
     /**
-     * Build an UploadSignalRequest for a git commit (contentActivities fallback).
+     * Build UploadSignalRequest(s) for a git commit (contentActivities fallback).
+     * Splits by content first, then by accessedResources if still too large.
      */
     buildCommitUploadSignalRequest(commitGroup, prInfo) {
         const conversationId = crypto.randomUUID() + PayloadBuilder.correlationIdSuffix;
-        const ctp = this.buildCommitContentToProcess(commitGroup, conversationId, 0);
         const userId = commitGroup.authorId || this.config.userId;
         const userEmail = commitGroup.authorEmail || prInfo.authorEmail;
-        return {
+        const ctp = this.buildCommitContentToProcess(commitGroup, conversationId, 0);
+        const singleRequest = {
             id: crypto.randomUUID() + PayloadBuilder.correlationIdSuffix,
             userId,
             userEmail,
             scopeIdentifier: "",
             contentMetadata: ctp,
         };
+        if (JSON.stringify(singleRequest).length <= this.maxRequestSize) {
+            return [singleRequest];
+        }
+        // Split needed — delegate to the common commit splitting helper
+        return this.splitCommitRequests(commitGroup, conversationId, 0, (c) => ({
+            id: crypto.randomUUID() + PayloadBuilder.correlationIdSuffix,
+            userId,
+            userEmail,
+            scopeIdentifier: "",
+            contentMetadata: c,
+        }));
+    }
+    /**
+     * Common helper: split a commit into multiple requests when it exceeds the
+     * size limit. Splits content first; if accessedResources alone exceed the
+     * limit, splits those across parts too.
+     *
+     * @param wrap — wraps a ContentToProcess into the final request type (T)
+     */
+    splitCommitRequests(commitGroup, conversationId, startSeqNum, wrap) {
+        const commitContent = this.buildCommitContentText(commitGroup);
+        const allResources = this.buildCommitAccessedResources(commitGroup);
+        // Measure overhead with empty content + full resources
+        const probeCTP = this.buildCommitContentToProcess(commitGroup, conversationId, startSeqNum, false, '', undefined, allResources);
+        const probeSize = JSON.stringify(wrap(probeCTP)).length;
+        if (probeSize <= this.maxRequestSize) {
+            // Content chunking alone is sufficient
+            const maxChunk = Math.max(1, this.maxContentSize - (probeSize - commitContent.length) - 200);
+            const results = [];
+            let partNumber = 1;
+            for (let i = 0; i < commitContent.length; i += maxChunk) {
+                const chunk = commitContent.substring(i, Math.min(i + maxChunk, commitContent.length));
+                const isLastChunk = i + maxChunk >= commitContent.length;
+                const partSuffix = ` Part: ${partNumber}`;
+                const resources = this.buildCommitAccessedResources(commitGroup, partSuffix);
+                const ctp = this.buildCommitContentToProcess(commitGroup, conversationId, startSeqNum + results.length, !isLastChunk, chunk, partNumber, resources);
+                results.push(wrap(ctp));
+                partNumber++;
+            }
+            this.logger.info(`Split commit ${commitGroup.sha} content into ${results.length} part(s)`);
+            return results;
+        }
+        // accessedResources alone exceed the limit — split resources across parts
+        const singleResourceSize = allResources.length > 1
+            ? JSON.stringify(allResources[1]).length + 2
+            : 200;
+        const resourceBudget = this.maxRequestSize - (probeSize - JSON.stringify(allResources).length) - 500;
+        const resourcesPerPart = Math.max(1, Math.floor(resourceBudget / singleResourceSize));
+        const results = [];
+        let partNumber = 1;
+        let contentRemaining = commitContent;
+        for (let rIdx = 0; rIdx < allResources.length; rIdx += resourcesPerPart) {
+            const resourceSlice = allResources.slice(rIdx, rIdx + resourcesPerPart);
+            const partSuffix = ` Part: ${partNumber}`;
+            const labeledResources = resourceSlice.map(r => ({ ...r, name: r.name + partSuffix }));
+            // First part gets as much content as fits; subsequent parts get empty content
+            let chunk = '';
+            let isTruncated = false;
+            if (contentRemaining.length > 0) {
+                const resourceJsonSize = JSON.stringify(labeledResources).length;
+                const wrapperOverhead = probeSize - JSON.stringify(allResources).length - commitContent.length;
+                const contentBudget = Math.max(0, this.maxContentSize - wrapperOverhead - resourceJsonSize - 200);
+                chunk = contentRemaining.substring(0, contentBudget);
+                contentRemaining = contentRemaining.substring(contentBudget);
+                isTruncated = contentRemaining.length > 0;
+            }
+            const ctp = this.buildCommitContentToProcess(commitGroup, conversationId, startSeqNum + results.length, isTruncated, chunk, partNumber, labeledResources);
+            results.push(wrap(ctp));
+            partNumber++;
+        }
+        // If content still remaining after all resource parts, add content-only parts
+        if (contentRemaining.length > 0) {
+            const emptyResources = this.buildCommitAccessedResources(commitGroup, ` Part: ${partNumber}`).slice(0, 1);
+            const emptyProbe = this.buildCommitContentToProcess(commitGroup, conversationId, 0, false, '', undefined, emptyResources);
+            const overhead = JSON.stringify(wrap(emptyProbe)).length;
+            const maxChunk = Math.max(1, this.maxContentSize - overhead - 200);
+            while (contentRemaining.length > 0) {
+                const partSuffix = ` Part: ${partNumber}`;
+                const resources = this.buildCommitAccessedResources(commitGroup, partSuffix).slice(0, 1);
+                const chunk = contentRemaining.substring(0, maxChunk);
+                contentRemaining = contentRemaining.substring(maxChunk);
+                const ctp = this.buildCommitContentToProcess(commitGroup, conversationId, startSeqNum + results.length, contentRemaining.length > 0, chunk, partNumber, resources);
+                results.push(wrap(ctp));
+                partNumber++;
+            }
+        }
+        this.logger.info(`Split commit ${commitGroup.sha} into ${results.length} part(s) (content + accessedResources)`);
+        return results;
     }
     /**
      * Build a ProcessContentBatchRequest item for a git commit (PCA batch).
+     * Returns multiple items if the commit content exceeds the size limit.
      */
-    buildCommitProcessContentBatchItem(commitGroup, conversationId, sequenceNumber) {
-        const ctp = this.buildCommitContentToProcess(commitGroup, conversationId, sequenceNumber);
-        return {
-            contentToProcess: ctp,
-            userId: commitGroup.authorId || this.config.userId,
-            userEmail: commitGroup.authorEmail || undefined,
+    buildCommitProcessContentBatchItems(commitGroup, conversationId, startSequenceNumber) {
+        const userId = commitGroup.authorId || this.config.userId;
+        const userEmail = commitGroup.authorEmail || undefined;
+        const singleCTP = this.buildCommitContentToProcess(commitGroup, conversationId, startSequenceNumber);
+        const singleItem = {
+            contentToProcess: singleCTP,
+            userId,
+            userEmail,
             requestId: crypto.randomUUID(),
         };
+        if (JSON.stringify(singleItem).length <= this.maxRequestSize) {
+            return [singleItem];
+        }
+        // Delegate to the common splitting helper
+        return this.splitCommitRequests(commitGroup, conversationId, startSequenceNumber, (ctp) => ({
+            contentToProcess: ctp,
+            userId,
+            userEmail,
+            requestId: crypto.randomUUID(),
+        }));
+    }
+    /**
+     * Build batched PCA requests for one or more commits, combining items
+     * into batches that fit within the payload size limit.
+     */
+    buildCommitProcessContentBatchRequest(commitGroups) {
+        const allItems = [];
+        const conversationId = crypto.randomUUID() + PayloadBuilder.correlationIdSuffix;
+        let seqNum = 0;
+        for (const commitGroup of commitGroups) {
+            const items = this.buildCommitProcessContentBatchItems(commitGroup, conversationId, seqNum);
+            allItems.push(...items);
+            seqNum += items.length;
+        }
+        // Split items into batches that fit within maxRequestSize
+        const batches = [];
+        let currentItems = [];
+        let currentSize = 0;
+        const batchOverhead = 200;
+        for (const item of allItems) {
+            const itemSize = JSON.stringify(item).length;
+            if (currentItems.length > 0 && currentSize + itemSize + batchOverhead > this.maxRequestSize) {
+                batches.push({ processContentRequests: currentItems });
+                currentItems = [];
+                currentSize = 0;
+            }
+            currentItems.push(item);
+            currentSize += itemSize;
+        }
+        if (currentItems.length > 0) {
+            batches.push({ processContentRequests: currentItems });
+        }
+        return batches;
     }
     mapChangeTypeToAccessType(typeOfChange) {
         switch (typeOfChange) {
@@ -63910,7 +64075,6 @@ function tryParseWorkflowRepoFromEnv() {
 
 
 
-
 class FullScanService {
     config;
     fileProcessor;
@@ -64061,27 +64225,30 @@ class FullScanService {
                 await this.sendCommitContentActivity(commitGroup, prInfo, failedPayloads);
                 continue;
             }
-            // Send via PCA batch
-            const conversationId = external_crypto_.randomUUID() + '@GA';
-            const pcaItem = this.payloadBuilder.buildCommitProcessContentBatchItem(commitGroup, conversationId, 0);
-            const pcaBatch = { processContentRequests: [pcaItem] };
-            const pcaResult = await this.purviewClient.processContentAsync(pcaBatch);
-            if (!pcaResult.success) {
-                this.logger.error(`PCA failed for commit ${commitGroup.sha}: ${pcaResult.error}. Falling back to contentActivities.`);
-                failedPayloads.push(`pca-fullscan-commit-${commitGroup.sha}`);
-                await this.sendCommitContentActivity(commitGroup, prInfo, failedPayloads);
-            }
-            else {
-                this.logger.debug(`Full scan: PCA completed for ${commitIdentifier}`);
+            // Send via PCA batch (combines and chunks as needed)
+            const pcaBatches = this.payloadBuilder.buildCommitProcessContentBatchRequest([commitGroup]);
+            for (const pcaBatch of pcaBatches) {
+                const pcaResult = await this.purviewClient.processContentAsync(pcaBatch);
+                if (!pcaResult.success) {
+                    this.logger.error(`PCA failed for commit ${commitGroup.sha}: ${pcaResult.error}. Falling back to contentActivities.`);
+                    failedPayloads.push(`pca-fullscan-commit-${commitGroup.sha}`);
+                    await this.sendCommitContentActivity(commitGroup, prInfo, failedPayloads);
+                    break;
+                }
+                else {
+                    this.logger.debug(`Full scan: PCA completed for ${commitIdentifier}`);
+                }
             }
         }
     }
     async sendCommitContentActivity(commitGroup, prInfo, failedPayloads) {
-        const req = this.payloadBuilder.buildCommitUploadSignalRequest(commitGroup, prInfo);
-        const result = await this.purviewClient.uploadSignal(req);
-        if (!result.success) {
-            this.logger.error(`ContentActivities upload failed for commit ${commitGroup.sha}: ${result.error}`);
-            failedPayloads.push(`ca-fullscan-commit-${commitGroup.sha}`);
+        const requests = this.payloadBuilder.buildCommitUploadSignalRequest(commitGroup, prInfo);
+        for (const req of requests) {
+            const result = await this.purviewClient.uploadSignal(req);
+            if (!result.success) {
+                this.logger.error(`ContentActivities upload failed for commit ${commitGroup.sha}: ${result.error}`);
+                failedPayloads.push(`ca-fullscan-commit-${commitGroup.sha}`);
+            }
         }
     }
     async resolveDefaultBranch(token, owner, repo) {
@@ -64360,6 +64527,7 @@ class GitHubActionsRunner {
             this.logger.info('Processing repository files');
             const prInfo = await this.fileProcessor.getPrInfo();
             this.payloadBuilder.prNumber = prInfo.prNumber;
+            this.payloadBuilder.prDescription = prInfo.body;
             const failedPayloads = [];
             const blockedFiles = [];
             const userPsDeniedCache = new Set();
@@ -64621,34 +64789,37 @@ class GitHubActionsRunner {
         }
         if (scopeCheck.executionMode === ExecutionMode.evaluateInline) {
             const conversationId = crypto.randomUUID();
-            const pcRequest = this.payloadBuilder.buildCommitProcessContentRequest(commitGroup, conversationId, 0);
-            const pcResponse = await this.purviewClient.processContent(commitUserId, pcRequest, psResult.scopeIdentifier, true);
-            if (!pcResponse.success) {
-                this.logger.error(`PC failed for commit ${commitGroup.sha}: ${pcResponse.error}. Falling back to contentActivities.`);
-                ctx.failedPayloads.push(`pc-commit-${commitGroup.sha}`);
-                await this.sendCommitContentActivity(commitGroup, ctx.prInfo, ctx.failedPayloads);
-                return;
-            }
-            const pcData = pcResponse.data;
-            if (pcData && isBlocked(pcData)) {
-                const blockingActions = getBlockingActions(pcData);
-                this.logger.warn(`BLOCKED: Commit ${commitGroup.sha} blocked by ${blockingActions.length} policy action(s)`);
-                ctx.blockedFiles.push({
-                    filePath: commitIdentifier,
-                    userId: commitUserId,
-                    policyActions: blockingActions,
-                });
+            const pcRequests = this.payloadBuilder.buildCommitProcessContentRequest(commitGroup, conversationId, 0);
+            for (const pcRequest of pcRequests) {
+                const pcResponse = await this.purviewClient.processContent(commitUserId, pcRequest, psResult.scopeIdentifier, true);
+                if (!pcResponse.success) {
+                    this.logger.error(`PC failed for commit ${commitGroup.sha}: ${pcResponse.error}. Falling back to contentActivities.`);
+                    ctx.failedPayloads.push(`pc-commit-${commitGroup.sha}`);
+                    await this.sendCommitContentActivity(commitGroup, ctx.prInfo, ctx.failedPayloads);
+                    return;
+                }
+                const pcData = pcResponse.data;
+                if (pcData && isBlocked(pcData)) {
+                    const blockingActions = getBlockingActions(pcData);
+                    this.logger.warn(`BLOCKED: Commit ${commitGroup.sha} blocked by ${blockingActions.length} policy action(s)`);
+                    ctx.blockedFiles.push({
+                        filePath: commitIdentifier,
+                        userId: commitUserId,
+                        policyActions: blockingActions,
+                    });
+                }
             }
         }
         else {
-            const conversationId = crypto.randomUUID() + '@GA';
-            const pcaItem = this.payloadBuilder.buildCommitProcessContentBatchItem(commitGroup, conversationId, 0);
-            const pcaBatch = { processContentRequests: [pcaItem] };
-            const pcaResult = await this.purviewClient.processContentAsync(pcaBatch);
-            if (!pcaResult.success) {
-                this.logger.error(`PCA failed for commit ${commitGroup.sha}: ${pcaResult.error}. Falling back to contentActivities.`);
-                ctx.failedPayloads.push(`pca-commit-${commitGroup.sha}`);
-                await this.sendCommitContentActivity(commitGroup, ctx.prInfo, ctx.failedPayloads);
+            const pcaBatches = this.payloadBuilder.buildCommitProcessContentBatchRequest([commitGroup]);
+            for (const pcaBatch of pcaBatches) {
+                const pcaResult = await this.purviewClient.processContentAsync(pcaBatch);
+                if (!pcaResult.success) {
+                    this.logger.error(`PCA failed for commit ${commitGroup.sha}: ${pcaResult.error}. Falling back to contentActivities.`);
+                    ctx.failedPayloads.push(`pca-commit-${commitGroup.sha}`);
+                    await this.sendCommitContentActivity(commitGroup, ctx.prInfo, ctx.failedPayloads);
+                    break;
+                }
             }
         }
     }
@@ -64663,11 +64834,13 @@ class GitHubActionsRunner {
         }
     }
     async sendCommitContentActivity(commitGroup, prInfo, failedPayloads) {
-        const req = this.payloadBuilder.buildCommitUploadSignalRequest(commitGroup, prInfo);
-        const result = await this.purviewClient.uploadSignal(req);
-        if (!result.success) {
-            this.logger.error(`ContentActivities upload failed for commit ${commitGroup.sha}: ${result.error}`);
-            failedPayloads.push(`ca-commit-${commitGroup.sha}`);
+        const requests = this.payloadBuilder.buildCommitUploadSignalRequest(commitGroup, prInfo);
+        for (const req of requests) {
+            const result = await this.purviewClient.uploadSignal(req);
+            if (!result.success) {
+                this.logger.error(`ContentActivities upload failed for commit ${commitGroup.sha}: ${result.error}`);
+                failedPayloads.push(`ca-commit-${commitGroup.sha}`);
+            }
         }
     }
     /**
