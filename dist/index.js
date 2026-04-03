@@ -62462,14 +62462,17 @@ class FileProcessor {
         const normalized = this.normalizeRepoPath(path);
         const includePatterns = (this.config.filePatterns || []).map(p => p.trim()).filter(Boolean);
         const excludePatterns = (this.config.excludePatterns || []).map(p => p.trim()).filter(Boolean);
+        // Ensure patterns without path separators or ** match at any depth.
+        // e.g. '*.ts' → '**/*.ts', '*' → '**/*'
+        const normalizePattern = (p) => !p.includes('/') && !p.includes('**') ? `**/${p}` : p;
         const included = includePatterns.length === 0
             ? true
-            : includePatterns.some(p => esm_minimatch(normalized, p, { dot: true }));
+            : includePatterns.some(p => esm_minimatch(normalized, normalizePattern(p), { dot: true }));
         if (!included) {
             this.logger.debug(`Excluding file '${path}' because it does not match any include patterns.`);
             return false;
         }
-        const excluded = excludePatterns.some(p => esm_minimatch(normalized, p, { dot: true }));
+        const excluded = excludePatterns.some(p => esm_minimatch(normalized, normalizePattern(p), { dot: true }));
         if (excluded) {
             this.logger.debug(`Excluding file '${path}' due to exclude pattern match.`);
         }
@@ -64195,13 +64198,14 @@ class FullScanService {
             return;
         }
         this.logger.info(`Full scan: processing ${allCommits.length} commit(s)`);
+        // Group commits by user so we can batch PCA calls per committer
+        const commitsByUser = new Map();
+        const fallbackCommits = [];
         for (const commitGroup of allCommits) {
             const commitUserId = commitGroup.authorId || this.config.userId;
-            const commitIdentifier = `commit:${commitGroup.sha}`;
-            // Check user PS cache
             if (userPsDeniedCache.has(commitUserId)) {
                 this.logger.warn(`Skipping commit ${commitGroup.sha} — user ${commitUserId} cached 401.`);
-                await this.sendCommitContentActivity(commitGroup, prInfo, failedPayloads);
+                fallbackCommits.push(commitGroup);
                 continue;
             }
             let userPsResponse = userPsCache.get(commitUserId);
@@ -64217,26 +64221,35 @@ class FullScanService {
                 if (userPsResponse.statusCode === 401) {
                     userPsDeniedCache.add(commitUserId);
                 }
-                await this.sendCommitContentActivity(commitGroup, prInfo, failedPayloads);
+                fallbackCommits.push(commitGroup);
                 continue;
             }
             if (!userPsResponse.data?.value || userPsResponse.data.value.length === 0) {
                 this.logger.warn(`No scopes for commit ${commitGroup.sha}, user ${commitUserId}. Falling back to contentActivities.`);
-                await this.sendCommitContentActivity(commitGroup, prInfo, failedPayloads);
+                fallbackCommits.push(commitGroup);
                 continue;
             }
-            // Send via PCA batch (combines and chunks as needed)
-            const pcaBatches = this.payloadBuilder.buildCommitProcessContentBatchRequest([commitGroup]);
+            const existing = commitsByUser.get(commitUserId) || [];
+            existing.push(commitGroup);
+            commitsByUser.set(commitUserId, existing);
+        }
+        // Send fallback commits via contentActivities
+        for (const commitGroup of fallbackCommits) {
+            await this.sendCommitContentActivity(commitGroup, prInfo, failedPayloads);
+        }
+        // Send batched PCA calls per user
+        for (const [userId, userCommits] of commitsByUser) {
+            const pcaBatches = this.payloadBuilder.buildCommitProcessContentBatchRequest(userCommits);
+            this.logger.info(`Full scan: sending ${userCommits.length} commit(s) in ${pcaBatches.length} PCA batch(es) for user ${userId}`);
             for (const pcaBatch of pcaBatches) {
                 const pcaResult = await this.purviewClient.processContentAsync(pcaBatch);
                 if (!pcaResult.success) {
-                    this.logger.error(`PCA failed for commit ${commitGroup.sha}: ${pcaResult.error}. Falling back to contentActivities.`);
-                    failedPayloads.push(`pca-fullscan-commit-${commitGroup.sha}`);
-                    await this.sendCommitContentActivity(commitGroup, prInfo, failedPayloads);
+                    this.logger.error(`PCA batch failed for user ${userId}: ${pcaResult.error}. Falling back to contentActivities for ${userCommits.length} commit(s).`);
+                    failedPayloads.push(`pca-fullscan-commits-${userId}`);
+                    for (const commitGroup of userCommits) {
+                        await this.sendCommitContentActivity(commitGroup, prInfo, failedPayloads);
+                    }
                     break;
-                }
-                else {
-                    this.logger.debug(`Full scan: PCA completed for ${commitIdentifier}`);
                 }
             }
         }
@@ -64442,7 +64455,8 @@ class FullScanService {
                     break;
                 }
                 else {
-                    this.logger.debug(`Full scan PCA batch completed for user ${userId}`);
+                    const committerEmail = userFiles[0]?.committerEmail || 'unknown';
+                    this.logger.debug(`Full scan PCA batch completed for user ${userId} (committer: ${committerEmail})`);
                 }
             }
         }

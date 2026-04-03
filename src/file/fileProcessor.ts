@@ -136,16 +136,21 @@ export class FileProcessor {
     const includePatterns = (this.config.filePatterns || []).map(p => p.trim()).filter(Boolean);
     const excludePatterns = (this.config.excludePatterns || []).map(p => p.trim()).filter(Boolean);
 
+    // Ensure patterns without path separators or ** match at any depth.
+    // e.g. '*.ts' → '**/*.ts', '*' → '**/*'
+    const normalizePattern = (p: string) =>
+      !p.includes('/') && !p.includes('**') ? `**/${p}` : p;
+
     const included = includePatterns.length === 0
       ? true
-      : includePatterns.some(p => minimatch(normalized, p, { dot: true }));
+      : includePatterns.some(p => minimatch(normalized, normalizePattern(p), { dot: true }));
 
     if (!included) {
       this.logger.debug(`Excluding file '${path}' because it does not match any include patterns.`);
       return false;
     }
 
-    const excluded = excludePatterns.some(p => minimatch(normalized, p, { dot: true }));
+    const excluded = excludePatterns.some(p => minimatch(normalized, normalizePattern(p), { dot: true }));
 
     if (excluded) {
       this.logger.debug(`Excluding file '${path}' due to exclude pattern match.`);
