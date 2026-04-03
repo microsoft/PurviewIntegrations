@@ -62155,11 +62155,6 @@ class PurviewClient {
             requestId,
             additionalHeaders: Object.keys(additionalHeaders),
         });
-        if (payload) {
-            this.logger.debug(`[${operationName}] Request payload`, {
-                payload: JSON.parse(JSON.stringify(JSON.parse(payload), this.jsonReplacer)),
-            });
-        }
         try {
             const response = await fetch(endpoint, {
                 method: method,
@@ -62211,12 +62206,6 @@ class PurviewClient {
             try {
                 const data = responseText ? JSON.parse(responseText) : {};
                 const etag = response.headers.get('etag')?.replace(/"/g, '') || undefined;
-                this.logger.debug(`[${operationName}] Response payload`, {
-                    statusCode: response.status,
-                    etag,
-                    correlationId,
-                    data: JSON.parse(JSON.stringify(data, this.jsonReplacer)),
-                });
                 this.logger.endGroup();
                 return {
                     success: true,
