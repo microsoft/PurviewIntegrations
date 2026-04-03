@@ -5,6 +5,7 @@ export class PayloadBuilder {
   private readonly logger: Logger;
   private readonly maxContentSize = 1024 * 1024 * 3;       // 3 MB — max for the content data field
   private readonly maxRequestSize = 1024 * 1024 * 3.7;     // 3.7 MB — max for the complete request
+  private readonly maxBatchItems = 64;                      // API limit on items per PCA batch
   private static readonly domain: string = "github.com";
   private static readonly scopeActivity: ProtectionScopeActivities = "uploadText";
   private static readonly appName = "GitHub";
@@ -362,7 +363,7 @@ export class PayloadBuilder {
 
     for (const item of allItems) {
       const itemSize = JSON.stringify(item).length;
-      if (currentItems.length > 0 && currentSize + itemSize + batchOverhead > this.maxRequestSize) {
+      if (currentItems.length > 0 && (currentItems.length >= this.maxBatchItems || currentSize + itemSize + batchOverhead > this.maxRequestSize)) {
         batches.push({ processContentRequests: currentItems });
         currentItems = [];
         currentSize = 0;
@@ -789,7 +790,7 @@ export class PayloadBuilder {
 
     for (const item of allItems) {
       const itemSize = JSON.stringify(item).length;
-      if (currentItems.length > 0 && currentSize + itemSize + batchOverhead > this.maxRequestSize) {
+      if (currentItems.length > 0 && (currentItems.length >= this.maxBatchItems || currentSize + itemSize + batchOverhead > this.maxRequestSize)) {
         batches.push({ processContentRequests: currentItems });
         currentItems = [];
         currentSize = 0;

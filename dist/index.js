@@ -63197,6 +63197,7 @@ class PayloadBuilder {
     logger;
     maxContentSize = 1024 * 1024 * 3; // 3 MB — max for the content data field
     maxRequestSize = 1024 * 1024 * 3.7; // 3.7 MB — max for the complete request
+    maxBatchItems = 64; // API limit on items per PCA batch
     static domain = "github.com";
     static scopeActivity = "uploadText";
     static appName = "GitHub";
@@ -63500,7 +63501,7 @@ class PayloadBuilder {
         const batchOverhead = 200;
         for (const item of allItems) {
             const itemSize = JSON.stringify(item).length;
-            if (currentItems.length > 0 && currentSize + itemSize + batchOverhead > this.maxRequestSize) {
+            if (currentItems.length > 0 && (currentItems.length >= this.maxBatchItems || currentSize + itemSize + batchOverhead > this.maxRequestSize)) {
                 batches.push({ processContentRequests: currentItems });
                 currentItems = [];
                 currentSize = 0;
@@ -63857,7 +63858,7 @@ class PayloadBuilder {
         const batchOverhead = 200;
         for (const item of allItems) {
             const itemSize = JSON.stringify(item).length;
-            if (currentItems.length > 0 && currentSize + itemSize + batchOverhead > this.maxRequestSize) {
+            if (currentItems.length > 0 && (currentItems.length >= this.maxBatchItems || currentSize + itemSize + batchOverhead > this.maxRequestSize)) {
                 batches.push({ processContentRequests: currentItems });
                 currentItems = [];
                 currentSize = 0;
