@@ -47,9 +47,12 @@ export interface FileMetadata {
   encoding: string;
   sha: string;
   content?: string;
-  authorLogin?: string | null | undefined; // Optional author field
-  authorEmail?: string | null | undefined; // Optional author email field
-  authorId?: string; // Optional author ID field
+  authorLogin?: string | null | undefined;
+  authorEmail?: string | null | undefined;
+  authorId?: string;
+  committerLogin?: string | null | undefined;
+  committerEmail?: string | null | undefined;
+  committerId?: string;
   numberOfDeletions?: number;
   numberOfAdditions?: number;
   numberOfChanges?: number;
@@ -63,6 +66,8 @@ export interface ApiResponse<T = any> {
   error?: string;
   statusCode?: number;
   etag?: string;
+  correlationId?: string;
+  responseBody?: string;
 }
 
 export type Result<T, E = Error> = 
@@ -89,6 +94,7 @@ export interface ProcessContentBatchRequest {
 export interface ProcessContentRequestItem {
     contentToProcess: ContentToProcess;
     userId?: string;
+    userEmail?: string;
     requestId: string;
 }
 
@@ -115,8 +121,9 @@ export interface ProcessContentMetadataBase extends GraphDataTypeBase {
 export interface ProcessConversationMetadata extends ProcessContentMetadataBase {
     "@odata.type": "microsoft.graph.processConversationMetadata";
     parentMessageId?: string;
-    accessedResources?: string[];
+    accessedResources_v2?: AccessedResourceDetails[];
     plugins?: AiInteractionPlugin[];
+    agents?: AiAgentInfo[];
 }
 
 export interface ProcessFileMetadata extends ProcessContentMetadataBase {
@@ -191,6 +198,26 @@ export interface AiInteractionPlugin {
     name: string;
     version: string;
 }
+
+export interface AiAgentInfo {
+    identifier: string;
+    name?: string;
+    version?: string;
+}
+
+export interface AccessedResourceDetails {
+    identifier: string;
+    name: string;
+    url?: string;
+    labelId?: string;
+    accessType?: ResourceAccessType;
+    status: ResourceAccessStatus;
+    isCrossPromptInjectionDetected?: boolean;
+}
+
+export type ResourceAccessType = "none" | "read" | "write" | "create" | "unknownFutureValue";
+
+export type ResourceAccessStatus = "failure" | "success" | "unknownFutureValue";
 
 export interface UploadSignalRequest {
   id: string;
@@ -283,6 +310,8 @@ export interface PrInfo {
   base: string,
   title: string,
   url: string | null | undefined,
+  prNumber?: number,
+  body?: string,
 }
 
 export interface GraphUserInfoContainer {
@@ -374,11 +403,23 @@ export interface ScopeCheckResult {
 export interface CommitInfo {
     sha: string;
     email: string | undefined;
+    committerEmail?: string;
+    message?: string;
 }
 
 export interface CommitFiles {
   sha: string;
   files: FileMetadata[];
+  message?: string;
+  authorEmail?: string;
+  authorLogin?: string;
+  authorName?: string;
+  authorId?: string;
+  committerEmail?: string;
+  committerLogin?: string;
+  committerName?: string;
+  committerId?: string;
+  timestamp?: string;
 }
 
 // --- User mapping from users.json ---

@@ -66,7 +66,7 @@ export class FileProcessor {
       const cached = this.graphUserIdCache.get(email);
       if (cached) {
         resolved[email] = cached;
-        this.logger.info(`Graph cache hit for '${email}': ${cached}`);
+        this.logger.debug(`Graph cache hit for '${email}': ${cached}`);
       } else {
         needsGraph.push(email);
       }
@@ -84,7 +84,7 @@ export class FileProcessor {
             const upn = user.userPrincipalName.toLowerCase();
             this.graphUserIdCache.set(upn, user.id);
             resolved[upn] = user.id;
-            this.logger.info(`Graph API resolved '${upn}': ${user.id}`);
+            this.logger.debug(`Graph API resolved '${upn}': ${user.id}`);
           }
         }
 
@@ -93,7 +93,7 @@ export class FileProcessor {
         for (const email of needsGraph) {
           if (!this.graphUserIdCache.has(email.toLowerCase())) {
             this.graphUserIdCache.set(email.toLowerCase(), this.config.userId);
-            this.logger.info(`Graph API: user '${email}' not found, caching as default userId`);
+            this.logger.debug(`Graph API: user '${email}' not found, caching as default userId`);
           }
         }
       } catch (e) {
@@ -136,19 +136,24 @@ export class FileProcessor {
     const includePatterns = (this.config.filePatterns || []).map(p => p.trim()).filter(Boolean);
     const excludePatterns = (this.config.excludePatterns || []).map(p => p.trim()).filter(Boolean);
 
+    // Ensure patterns without path separators or ** match at any depth.
+    // e.g. '*.ts' → '**/*.ts', '*' → '**/*'
+    const normalizePattern = (p: string) =>
+      !p.includes('/') && !p.includes('**') ? `**/${p}` : p;
+
     const included = includePatterns.length === 0
       ? true
-      : includePatterns.some(p => minimatch(normalized, p, { dot: true }));
+      : includePatterns.some(p => minimatch(normalized, normalizePattern(p), { dot: true }));
 
     if (!included) {
-      this.logger.info(`Excluding file '${path}' because it does not match any include patterns.`);
+      this.logger.debug(`Excluding file '${path}' because it does not match any include patterns.`);
       return false;
     }
 
-    const excluded = excludePatterns.some(p => minimatch(normalized, p, { dot: true }));
+    const excluded = excludePatterns.some(p => minimatch(normalized, normalizePattern(p), { dot: true }));
 
     if (excluded) {
-      this.logger.info(`Excluding file '${path}' due to exclude pattern match.`);
+      this.logger.debug(`Excluding file '${path}' due to exclude pattern match.`);
     }
 
     return !excluded;
@@ -169,7 +174,11 @@ export class FileProcessor {
     }
   }
 
-  async getAllRepoFiles(): Promise<FileMetadata[]> {
+  async getAllRepoFiles(atRef?: string): Promise<FileMetadata[]> {
+    if (atRef) {
+      return this.getRepoFilesAtRef(atRef);
+    }
+
     const patterns = this.getGlobPatterns().join('\n');
     const globber = await glob.create(patterns);
     const files = await globber.glob();
@@ -199,7 +208,7 @@ export class FileProcessor {
         const encoding = isBinary ? 'base64' : 'utf-8';
 
         if (isBinary) {
-          this.logger.info(`Skipping binary file: ${filePath}`);
+          this.logger.debug(`Skipping binary file: ${filePath}`);
           continue;
         }
 
@@ -234,7 +243,173 @@ export class FileProcessor {
       if (authorEmail) {
         file.authorEmail = authorEmail;
         file.authorId = userIdMap[authorEmail.toLowerCase()] || this.config.userId;
+        // For full-scan files the last commit author doubles as committer
+        // so that AiAgentInfo is populated in the payload.
+        file.committerEmail = file.committerEmail || authorEmail;
+        file.committerId = file.committerId || file.authorId;
       }
+    }
+
+    return result;
+  }
+
+  /**
+   * List repository files at a specific git ref using `git ls-tree`.
+   * This avoids reading from the working tree which may include uncommitted
+   * or PR-only changes that shouldn't appear in the full scan.
+   */
+  private async getRepoFilesAtRef(ref: string): Promise<FileMetadata[]> {
+    const workspace = process.env['GITHUB_WORKSPACE'] || process.cwd();
+
+    let treeOutput: string;
+    // The ref may not be available in a shallow clone (e.g. PR base SHA).
+    // Fetch it so git ls-tree can resolve it.
+    try {
+      execSync(`git fetch --depth=1 origin ${ref}`, { cwd: workspace, encoding: 'utf-8', timeout: 30000 });
+    } catch {
+      // Already available locally — continue
+    }
+
+    try {
+      treeOutput = execSync(
+        `git ls-tree -r --long "${ref}"`,
+        { cwd: workspace, encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 }
+      ).trim();
+    } catch (e) {
+      this.logger.warn(`Failed to list files at ref ${ref}`, { error: e });
+      return [];
+    }
+
+    if (!treeOutput) {
+      return [];
+    }
+
+    const maxBytes = this.config.maxFileSize;
+    const result: FileMetadata[] = [];
+
+    for (const line of treeOutput.split('\n')) {
+      // git ls-tree --long format: <mode> blob <sha> <size>\t<path>
+      const match = line.match(/^\d+ blob ([0-9a-f]+)\s+(\d+)\t(.+)$/);
+      if (!match) continue;
+
+      const blobSha = match[1]!;
+      const size = parseInt(match[2]!, 10);
+      const filePath = match[3]!;
+
+      if (!this.shouldIncludePath(filePath)) continue;
+      if (size === 0) continue;
+
+      if (size > maxBytes) {
+        this.logger.warn(`Skipping oversized file during full scan: ${filePath} (${size} bytes > ${maxBytes} bytes)`);
+        continue;
+      }
+
+      if (isBinaryPath(filePath)) {
+        this.logger.debug(`Skipping binary file: ${filePath}`);
+        continue;
+      }
+
+      try {
+        const content = execSync(
+          `git cat-file -p ${blobSha}`,
+          { cwd: workspace, encoding: 'utf-8', maxBuffer: maxBytes }
+        );
+
+        result.push({
+          path: filePath,
+          size,
+          encoding: 'utf-8',
+          sha: blobSha,
+          content,
+          typeOfChange: 'unknown',
+          commitTimestamp: new Date().toISOString(),
+        });
+      } catch (e) {
+        this.logger.warn(`Failed reading file at ${ref}: ${filePath}`, { error: e });
+      }
+    }
+
+    this.logger.info(`Full scan selected ${result.length} files after filtering (at ref ${ref}).`);
+
+    // --- Resolve author info for each file ---
+    const fileAuthorMap = this.getFileAuthorEmails(result);
+    const uniqueEmails = new Set(Object.values(fileAuthorMap).filter(Boolean) as string[]);
+    const userIdMap = await this.resolveUserIds(uniqueEmails);
+
+    for (const file of result) {
+      const authorEmail = fileAuthorMap[file.path];
+      if (authorEmail) {
+        file.authorEmail = authorEmail;
+        file.authorId = userIdMap[authorEmail.toLowerCase()] || this.config.userId;
+        file.committerEmail = file.committerEmail || authorEmail;
+        file.committerId = file.committerId || file.authorId;
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Fetch recent commits for the default branch (used during full scans).
+   * When `upToSha` is provided, only commits up to and including that SHA are
+   * returned (i.e. commits *before* the current event). The current event's
+   * commits are left for the diff path.
+   */
+  async getAllRepoCommits(upToSha?: string): Promise<CommitFiles[]> {
+    const owner = this.config.repository.owner;
+    const repo = this.config.repository.repo;
+
+    this.logger.info(`Fetching recent commits for full scan${upToSha ? ` (up to ${upToSha})` : ''}`);
+    const listParams: { owner: string; repo: string; per_page: number; sha?: string } = {
+      owner,
+      repo,
+      per_page: 100,
+    };
+    // When a boundary SHA is provided, ask the GitHub API to start listing
+    // from that SHA (inclusive), which excludes newer commits.
+    if (upToSha) {
+      listParams.sha = upToSha;
+    }
+    const { data: commits } = await this.octokit.rest.repos.listCommits(listParams);
+
+    if (commits.length === 0) {
+      this.logger.info('No commits found in repository');
+      return [];
+    }
+
+    this.logger.info(`Found ${commits.length} commit(s) for full scan`);
+
+    // Resolve author/committer emails to user IDs
+    const allEmails = new Set<string>();
+    for (const c of commits) {
+      const authorEmail = c.commit.author?.email;
+      const committerEmail = c.commit.committer?.email;
+      if (authorEmail) allEmails.add(authorEmail.toLowerCase());
+      if (committerEmail) allEmails.add(committerEmail.toLowerCase());
+    }
+    const userIdMap = await this.resolveUserIds(allEmails);
+
+    const result: CommitFiles[] = [];
+    for (const c of commits) {
+      const authorEmail = c.commit.author?.email || undefined;
+      const committerEmail = c.commit.committer?.email || undefined;
+      const authorId = authorEmail ? (userIdMap[authorEmail.toLowerCase()] || this.config.userId) : undefined;
+      const committerId = committerEmail ? (userIdMap[committerEmail.toLowerCase()] || this.config.userId) : undefined;
+
+      result.push({
+        sha: c.sha,
+        files: [],
+        message: c.commit.message || undefined,
+        authorEmail,
+        authorLogin: c.author?.login || undefined,
+        authorName: c.commit.author?.name || undefined,
+        authorId,
+        committerEmail,
+        committerLogin: c.committer?.login || undefined,
+        committerName: c.commit.committer?.name || undefined,
+        committerId,
+        timestamp: c.commit.author?.date || c.commit.committer?.date || undefined,
+      });
     }
 
     return result;
@@ -326,35 +501,47 @@ export class FileProcessor {
       base: base,
       title: title,
       url: url,
+      prNumber: pr["number"],
+      body: pr["body"] || undefined,
     };
   }
 
-  private async getFilesForCommit(commitSha: string, userId: string | undefined): Promise<FileMetadata[]> {
+  private async getFilesForCommit(commitSha: string, authorId: string | undefined, committerId: string | undefined): Promise<CommitFiles> {
     const { data: commit } = await this.octokit.rest.repos.getCommit({
       owner: this.config.repository.owner,
       repo: this.config.repository.repo,
       ref: commitSha
     });
 
+    const commitMeta: CommitFiles = {
+      sha: commit.sha,
+      files: [],
+      message: commit.commit.message || undefined,
+      authorEmail: commit.commit.author?.email || undefined,
+      authorLogin: commit.author?.login || undefined,
+      authorName: commit.commit.author?.name || undefined,
+      authorId,
+      committerEmail: commit.commit.committer?.email || undefined,
+      committerLogin: commit.committer?.login || undefined,
+      committerName: commit.commit.committer?.name || undefined,
+      committerId,
+      timestamp: commit.commit.author?.date || commit.commit.committer?.date || undefined,
+    };
+
     if (!commit.files || commit.files.length === 0) {
       this.logger.warn(`No files found in commit: ${commit.sha}`);
-      return [];
+      return commitMeta;
     }
 
     this.logger.info(`Processing commit ${commit.sha} with ${commit.files.length} changed file(s).`);
 
-    let fileMetadata: FileMetadata[] = [];
-
-    const token = await this.authService.getToken();
-    this.purviewClient.setAuthToken(token.accessToken);
-
     const filteredCommitFiles = commit.files!.filter((f: CommitFile) => this.shouldIncludePath(f.filename));
 
-    this.logger.info(`Commit ${commit.sha}: ${filteredCommitFiles.length}/${commit.files.length} files match the configured patterns.`);
+    this.logger.debug(`Commit ${commit.sha}: ${filteredCommitFiles.length}/${commit.files.length} files match the configured patterns.`);
 
     for (const file of filteredCommitFiles) {
       if (isBinaryPath(file.filename)) {
-        this.logger.info(`Skipping binary file: ${file.filename}`);
+        this.logger.debug(`Skipping binary file: ${file.filename}`);
         continue;
       }
 
@@ -370,7 +557,7 @@ export class FileProcessor {
         }
       }
 
-      const metadata = {
+      const metadata: FileMetadata = {
         path: file.filename,
         size: fileSize,
         encoding: 'utf-8',
@@ -378,17 +565,20 @@ export class FileProcessor {
         content: fileContent,
         authorLogin: commit.author?.login || commit.committer?.login || null,
         authorEmail: commit.commit.author?.email || commit.commit.committer?.email || null,
-        authorId: userId,
+        authorId,
+        committerLogin: commit.committer?.login || commit.author?.login || null,
+        committerEmail: commit.commit.committer?.email || commit.commit.author?.email || null,
+        committerId,
         numberOfDeletions: file.deletions,
         numberOfAdditions: file.additions,
         numberOfChanges: file.changes,
         typeOfChange: file.status,
         commitTimestamp: commit.commit.author?.date || commit.commit.committer?.date
-      }
-      fileMetadata.push(metadata);
+      };
+      commitMeta.files.push(metadata);
     }
 
-    return fileMetadata;
+    return commitMeta;
   }
 
   /**
@@ -636,9 +826,11 @@ export class FileProcessor {
     // Commits list should be populated for push events
     if (commits && commits.length > 0) {
       this.logger.info(`Found ${commits.length} commits in push event.`);
-      const commitInfos: CommitInfo[] = commits.map((commit: { id: string; author: { email: any; }; committer: { email: any; }; }) => ({
+      const commitInfos: CommitInfo[] = commits.map((commit: { id: string; message?: string; author: { email: any; }; committer: { email: any; }; }) => ({
         sha: commit.id,
         email: commit.author?.email || commit.committer?.email || undefined,
+        committerEmail: commit.committer?.email || undefined,
+        message: commit.message || undefined,
       }));
       return commitInfos;
     }
@@ -662,7 +854,9 @@ export class FileProcessor {
 
       const commitInfos: CommitInfo[] = comparison.commits.map((commit: CommitData) => ({
         sha: commit.sha,
-        email: commit.commit.author?.email || commit.commit.committer?.email || undefined
+        email: commit.commit.author?.email || commit.commit.committer?.email || undefined,
+        committerEmail: commit.commit.committer?.email || undefined,
+        message: commit.commit.message || undefined,
       }));
 
       return commitInfos;
@@ -688,15 +882,17 @@ export class FileProcessor {
 
     const commitInfos: CommitInfo[] = commits.map((commit: PullRequestCommit) => ({
       sha: commit.sha,
-      email: commit.commit.author?.email || commit.commit.committer?.email || undefined
+      email: commit.commit.author?.email || commit.commit.committer?.email || undefined,
+      committerEmail: commit.commit.committer?.email || undefined,
+      message: commit.commit.message || undefined,
     }));
 
     this.logger.info(`Found ${commitInfos.length} total commit(s) in PR #${pr.number}`);
     return commitInfos;
   }
 
-  async getFilesGroupedByCommit(lastProcessedHeadSha?: string | null): Promise<CommitFiles[]> {
-    const allCommits = await this.getCommits();
+  async getFilesGroupedByCommit(lastProcessedHeadSha?: string | null, prefetchedCommits?: CommitInfo[]): Promise<CommitFiles[]> {
+    const allCommits = prefetchedCommits ?? await this.getCommits();
 
     // Find commits to process by skipping everything up to and including lastProcessedHeadSha
     let commitsToProcess = allCommits;
@@ -715,24 +911,31 @@ export class FileProcessor {
       return [];
     }
 
-    // Resolve all author emails to user IDs up front
-    const commitAuthorEmails: Set<string> = new Set();
+    // Resolve all author and committer emails to user IDs up front
+    const allEmails: Set<string> = new Set();
     for (const commit of commitsToProcess) {
       if (commit.email) {
-        commitAuthorEmails.add(commit.email.toLowerCase());
+        allEmails.add(commit.email.toLowerCase());
+      }
+      if (commit.committerEmail) {
+        allEmails.add(commit.committerEmail.toLowerCase());
       }
     }
-    const userIdMap = await this.resolveUserIds(commitAuthorEmails);
+    const userIdMap = await this.resolveUserIds(allEmails);
 
     const result: CommitFiles[] = [];
     for (const commit of commitsToProcess) {
-      this.logger.info(`Processing commit: ${commit.sha}`);
+      this.logger.debug(`Processing commit: ${commit.sha}`);
       let userId: string | undefined;
       if (commit.email) {
         userId = userIdMap[commit.email.toLowerCase()] || this.config.userId;
       }
-      const files = await this.getFilesForCommit(commit.sha, userId);
-      result.push({ sha: commit.sha, files });
+      let committerId: string | undefined;
+      if (commit.committerEmail) {
+        committerId = userIdMap[commit.committerEmail.toLowerCase()] || this.config.userId;
+      }
+      const commitFiles = await this.getFilesForCommit(commit.sha, userId, committerId);
+      result.push(commitFiles);
     }
 
     return result;

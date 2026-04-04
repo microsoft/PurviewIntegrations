@@ -1,5 +1,5 @@
 import * as github from '@actions/github';
-import { ActionConfig, FileMetadata, StateTrackingInfo, ApiResponse, ProtectionScopesResponse } from '../config/types';
+import { ActionConfig, FileMetadata, StateTrackingInfo, ApiResponse, ProtectionScopesResponse, PrInfo, ProtectionScopesRequest, CommitFiles } from '../config/types';
 import { FileProcessor } from '../file/fileProcessor';
 import { PurviewClient } from '../api/purviewClient';
 import { PayloadBuilder } from '../payload/payloadBuilder';
@@ -101,9 +101,10 @@ export class FullScanService {
   async performFullScan(
     stateInfo: StateTrackingInfo | undefined,
     failedPayloads: string[],
-    prInfo: any,
+    prInfo: PrInfo,
     userPsDeniedCache: Set<string>,
-    userPsCache: Map<string, ApiResponse<ProtectionScopesResponse>>
+    userPsCache: Map<string, ApiResponse<ProtectionScopesResponse>>,
+    currentEventSha?: string
   ): Promise<number> {
     this.logger.info(
       stateInfo
@@ -111,8 +112,11 @@ export class FullScanService {
         : 'State tracking disabled; scanning full repository.'
     );
 
-    const allFiles = await this.fileProcessor.getAllRepoFiles();
+    const allFiles = await this.fileProcessor.getAllRepoFiles(currentEventSha);
     const fullScanFileCount = allFiles.length;
+
+    // Mark payloads as full-scan so AiAgentInfo uses email + "fullscan" version
+    this.payloadBuilder.isFullScan = true;
 
     if (allFiles.length === 0) {
       this.logger.warn('No files found in repository for full scan');
@@ -139,12 +143,116 @@ export class FullScanService {
       await this.processFilesByUser(allFiles, prInfo, failedPayloads, psRequest, userPsDeniedCache, userPsCache);
     }
 
+    // Process every git commit before the current event
+    await this.processCommitsForFullScan(prInfo, failedPayloads, psRequest, userPsDeniedCache, userPsCache, currentEventSha);
+
+    // Reset so subsequent diff-path payloads use normal agent version
+    this.payloadBuilder.isFullScan = false;
+
     // Write state marker
     if (stateInfo) {
       await this.writeStateMarker(stateInfo);
     }
 
     return fullScanFileCount;
+  }
+
+  /**
+   * Fetch repo commits *before* the current event boundary and send each
+   * through the PCA / contentActivities pipeline, mirroring how the diff
+   * path handles commit-level requests.
+   */
+  private async processCommitsForFullScan(
+    prInfo: PrInfo,
+    failedPayloads: string[],
+    psRequest: ProtectionScopesRequest,
+    userPsDeniedCache: Set<string>,
+    userPsCache: Map<string, ApiResponse<ProtectionScopesResponse>>,
+    currentEventSha?: string
+  ): Promise<void> {
+    const allCommits = await this.fileProcessor.getAllRepoCommits(currentEventSha);
+    if (allCommits.length === 0) {
+      this.logger.info('No commits to process during full scan');
+      return;
+    }
+    this.logger.info(`Full scan: processing ${allCommits.length} commit(s)`);
+
+    // Group commits by user so we can batch PCA calls per committer
+    const commitsByUser = new Map<string, CommitFiles[]>();
+    const fallbackCommits: CommitFiles[] = [];
+
+    for (const commitGroup of allCommits) {
+      const commitUserId = commitGroup.authorId || this.config.userId;
+
+      if (userPsDeniedCache.has(commitUserId)) {
+        this.logger.warn(`Skipping commit ${commitGroup.sha} — user ${commitUserId} cached 401.`);
+        fallbackCommits.push(commitGroup);
+        continue;
+      }
+
+      let userPsResponse = userPsCache.get(commitUserId);
+      if (!userPsResponse) {
+        userPsResponse = await this.purviewClient.searchUserProtectionScope(commitUserId, psRequest);
+        if (userPsResponse.success) {
+          userPsCache.set(commitUserId, userPsResponse);
+        }
+      }
+
+      if (!userPsResponse.success) {
+        this.logger.error(`User PS failed for commit ${commitGroup.sha}, user ${commitUserId}: ${userPsResponse.error}`);
+        failedPayloads.push(`ps-fullscan-commit-${commitGroup.sha}`);
+        if (userPsResponse.statusCode === 401) {
+          userPsDeniedCache.add(commitUserId);
+        }
+        fallbackCommits.push(commitGroup);
+        continue;
+      }
+
+      if (!userPsResponse.data?.value || userPsResponse.data.value.length === 0) {
+        this.logger.warn(`No scopes for commit ${commitGroup.sha}, user ${commitUserId}. Falling back to contentActivities.`);
+        fallbackCommits.push(commitGroup);
+        continue;
+      }
+
+      const existing = commitsByUser.get(commitUserId) || [];
+      existing.push(commitGroup);
+      commitsByUser.set(commitUserId, existing);
+    }
+
+    // Send fallback commits via contentActivities
+    for (const commitGroup of fallbackCommits) {
+      await this.sendCommitContentActivity(commitGroup, prInfo, failedPayloads);
+    }
+
+    // Send batched PCA calls per user
+    for (const [userId, userCommits] of commitsByUser) {
+      const pcaBatches = this.payloadBuilder.buildCommitProcessContentBatchRequest(userCommits);
+      this.logger.info(`Full scan: sending ${userCommits.length} commit(s) in ${pcaBatches.length} PCA batch(es) for user ${userId}`);
+
+      for (const pcaBatch of pcaBatches) {
+        const pcaResult = await this.purviewClient.processContentAsync(pcaBatch);
+
+        if (!pcaResult.success) {
+          this.logger.error(`PCA batch failed for user ${userId}: ${pcaResult.error}. Falling back to contentActivities for ${userCommits.length} commit(s).`);
+          failedPayloads.push(`pca-fullscan-commits-${userId}`);
+          for (const commitGroup of userCommits) {
+            await this.sendCommitContentActivity(commitGroup, prInfo, failedPayloads);
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  private async sendCommitContentActivity(commitGroup: CommitFiles, prInfo: PrInfo, failedPayloads: string[]): Promise<void> {
+    const requests = this.payloadBuilder.buildCommitUploadSignalRequest(commitGroup, prInfo);
+    for (const req of requests) {
+      const result = await this.purviewClient.uploadSignal(req);
+      if (!result.success) {
+        this.logger.error(`ContentActivities upload failed for commit ${commitGroup.sha}: ${result.error}`);
+        failedPayloads.push(`ca-fullscan-commit-${commitGroup.sha}`);
+      }
+    }
   }
 
   private async resolveDefaultBranch(token: string, owner: string, repo: string): Promise<string> {
@@ -312,9 +420,9 @@ export class FullScanService {
 
   private async processFilesByUser(
     allFiles: FileMetadata[],
-    prInfo: any,
+    prInfo: PrInfo,
     failedPayloads: string[],
-    psRequest: any,
+    psRequest: ProtectionScopesRequest,
     userPsDeniedCache: Set<string>,
     userPsCache: Map<string, ApiResponse<ProtectionScopesResponse>>
   ): Promise<void> {
@@ -332,7 +440,7 @@ export class FullScanService {
       // Call per-user protection scopes (check cache first)
       let userPsResponse = userPsCache.get(userId);
       if (userPsResponse) {
-        this.logger.info(`Full scan: using cached PS response for user ${userId}`);
+        this.logger.debug(`Full scan: using cached PS response for user ${userId}`);
       } else {
         userPsResponse = await this.purviewClient.searchUserProtectionScope(userId, psRequest);
         if (userPsResponse.success) {
@@ -360,17 +468,19 @@ export class FullScanService {
 
       // User has scopes → send PCA batch
       const pcaBatchRequests = this.payloadBuilder.buildProcessContentBatchRequest(userFiles);
-      this.logger.info(`Full scan: sending ${userFiles.length} file(s) to PCA batch for user ${userId}`);
-      for (const pcaBatchRequest of pcaBatchRequests) {
+      const committerEmail = userFiles.find(f => f.committerEmail)?.committerEmail || 'unknown';
+      this.logger.info(`Full scan: sending ${userFiles.length} file(s) in ${pcaBatchRequests.length} PCA batch(es) for user ${userId} (committer: ${committerEmail})`);
+      for (let i = 0; i < pcaBatchRequests.length; i++) {
+        const pcaBatchRequest = pcaBatchRequests[i]!;
         const pcaResult = await this.purviewClient.processContentAsync(pcaBatchRequest);
 
         if (!pcaResult.success) {
-          this.logger.error(`PCA batch failed for user ${userId}: ${pcaResult.error}. Falling back to contentActivities.`);
+          this.logger.error(`PCA batch ${i + 1}/${pcaBatchRequests.length} failed for user ${userId}: ${pcaResult.error}. Falling back to contentActivities.`);
           failedPayloads.push(`pca-fullscan-${userId}`);
           await this.sendContentActivities(userFiles, prInfo, failedPayloads);
           break;
         } else {
-          this.logger.info(`Full scan PCA batch completed for user ${userId}`);
+          this.logger.debug(`Full scan PCA batch ${i + 1}/${pcaBatchRequests.length} completed for user ${userId}`);
         }
       }
     }
@@ -399,7 +509,7 @@ export class FullScanService {
     }
   }
 
-  private async sendContentActivities(files: FileMetadata[], prInfo: any, failedPayloads: string[]): Promise<void> {
+  private async sendContentActivities(files: FileMetadata[], prInfo: PrInfo, failedPayloads: string[]): Promise<void> {
     const uploadRequests = this.payloadBuilder.buildUploadSignalRequest(files, prInfo);
     for (const req of uploadRequests) {
       const result = await this.purviewClient.uploadSignal(req);

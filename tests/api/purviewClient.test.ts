@@ -9,7 +9,7 @@ jest.mock('@actions/core', () => ({
 }));
 
 import { PurviewClient } from '../../src/api/purviewClient';
-import { ActionConfig, ProcessContentBatchRequest, UploadSignalRequest } from '../../src/config/types';
+import { ActionConfig, UploadSignalRequest } from '../../src/config/types';
 
 function createConfig(overrides: Partial<ActionConfig> = {}): ActionConfig {
   return {
@@ -69,16 +69,23 @@ describe('PurviewClient', () => {
       });
       expect(result.success).toBe(true);
     });
+
+    it('throws when auth token is not set', async () => {
+      await expect(client.processContentAsync({ processContentRequests: [] })).rejects.toThrow(
+        'Authentication token not set'
+      );
+      await expect(
+        client.processContent('user-1', { contentToProcess: { contentEntries: [] } as any }, '')
+      ).rejects.toThrow('Authentication token not set');
+      await expect(client.uploadSignal({
+        id: 'sig-1', userId: 'u1', scopeIdentifier: '',
+        contentMetadata: { contentEntries: [{ identifier: 'test.ts' }] } as any,
+      })).rejects.toThrow('Authentication token not set');
+      await expect(client.getUserInfo(['test@test.com'])).rejects.toThrow('Authentication token not set');
+    });
   });
 
   describe('processContentAsync', () => {
-    it('throws when auth token is not set', async () => {
-      const payload: ProcessContentBatchRequest = { processContentRequests: [] };
-      await expect(client.processContentAsync(payload)).rejects.toThrow(
-        'Authentication token not set'
-      );
-    });
-
     it('returns success on 200 response', async () => {
       client.setAuthToken('token');
       mockFetch({ status: 200, body: { id: 'batch-1' } });
@@ -89,12 +96,6 @@ describe('PurviewClient', () => {
   });
 
   describe('processContent', () => {
-    it('throws when auth token is not set', async () => {
-      await expect(
-        client.processContent('user-1', { contentToProcess: { contentEntries: [] } as any }, '')
-      ).rejects.toThrow('Authentication token not set');
-    });
-
     it('sends request to user-specific endpoint', async () => {
       client.setAuthToken('token');
       mockFetch({ status: 200, body: { id: 'pc-1', policyActions: [] } });
@@ -141,20 +142,6 @@ describe('PurviewClient', () => {
   });
 
   describe('uploadSignal', () => {
-    it('throws when auth token is not set', async () => {
-      const payload: UploadSignalRequest = {
-        id: 'sig-1',
-        userId: 'u1',
-        scopeIdentifier: '',
-        contentMetadata: {
-          contentEntries: [{ identifier: 'test.ts' }],
-        } as any,
-      };
-      await expect(client.uploadSignal(payload)).rejects.toThrow(
-        'Authentication token not set'
-      );
-    });
-
     it('sends to contentActivities endpoint', async () => {
       client.setAuthToken('token');
       mockFetch({ status: 200, body: {} });
@@ -197,12 +184,6 @@ describe('PurviewClient', () => {
   });
 
   describe('getUserInfo', () => {
-    it('throws when auth token is not set', async () => {
-      await expect(client.getUserInfo(['test@test.com'])).rejects.toThrow(
-        'Authentication token not set'
-      );
-    });
-
     it('sends GET request with filter query', async () => {
       client.setAuthToken('token');
       mockFetch({
@@ -220,13 +201,39 @@ describe('PurviewClient', () => {
   });
 
   describe('error handling', () => {
-    it('returns success=false on non-retryable errors', async () => {
+    it('returns full error details (message, statusCode, correlationId, responseBody) on failure', async () => {
       client.setAuthToken('token');
-      mockFetch({ status: 400, body: { error: 'Bad Request' } });
+      const headers = new Map<string, string>([['client-request-id', 'corr-abc']]);
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: false, status: 400, statusText: 'Bad Request',
+        text: () => Promise.resolve('{"error":{"code":"InvalidRequest","message":"missing field"}}'),
+        headers: { get: (k: string) => headers.get(k.toLowerCase()) ?? null },
+      });
 
-      // processContentAsync catches errors and returns { success: false }
       const result = await client.processContentAsync({ processContentRequests: [] });
       expect(result.success).toBe(false);
+      expect(result.error).toBe('API request failed: 400 - Bad Request');
+      expect(result.statusCode).toBe(400);
+      expect(result.correlationId).toBe('corr-abc');
+      expect(result.responseBody).toContain('InvalidRequest');
+    });
+
+    it('returns error details consistently across all API methods', async () => {
+      client.setAuthToken('token');
+      const headers = new Map<string, string>([['client-request-id', 'corr-xyz']]);
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: false, status: 403, statusText: 'Forbidden',
+        text: () => Promise.resolve('{"error":"forbidden"}'),
+        headers: { get: (k: string) => headers.get(k.toLowerCase()) ?? null },
+      });
+
+      const uploadResult = await client.uploadSignal({
+        id: 'sig-1', userId: 'u1', scopeIdentifier: '',
+        contentMetadata: { contentEntries: [{ identifier: 'f.ts' }] } as any,
+      });
+      expect(uploadResult.statusCode).toBe(403);
+      expect(uploadResult.correlationId).toBe('corr-xyz');
+      expect(uploadResult.responseBody).toContain('forbidden');
     });
 
     it('includes etag from response headers', async () => {
@@ -240,6 +247,66 @@ describe('PurviewClient', () => {
       const result = await client.searchTenantProtectionScope({ activities: 'uploadText' });
       expect(result.success).toBe(true);
       expect(result.etag).toBe('abc-123');
+    });
+  });
+
+  describe('token refresh on 401', () => {
+    it('retries once with fresh token when tokenProvider and tokenRefresh are set', async () => {
+      let callCount = 0;
+      const headers = new Map<string, string>();
+      globalThis.fetch = jest.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Promise.resolve({
+            ok: false, status: 401, statusText: 'Unauthorized',
+            text: () => Promise.resolve('{}'),
+            headers: { get: (k: string) => headers.get(k) ?? null },
+          });
+        }
+        return Promise.resolve({
+          ok: true, status: 200, statusText: 'OK',
+          text: () => Promise.resolve(JSON.stringify({ value: [] })),
+          headers: { get: (k: string) => headers.get(k) ?? null },
+        });
+      });
+
+      client.setAuthToken('stale-token');
+      const refreshFn = jest.fn();
+      client.setTokenProvider(async () => 'fresh-token');
+      client.setTokenRefresh(refreshFn);
+
+      const result = await client.searchTenantProtectionScope({ activities: 'uploadText' });
+      expect(result.success).toBe(true);
+      expect(refreshFn).toHaveBeenCalledTimes(1);
+      expect(callCount).toBe(2);
+    });
+
+    it('fails after second 401 (no infinite retry)', async () => {
+      const headers = new Map<string, string>();
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: false, status: 401, statusText: 'Unauthorized',
+        text: () => Promise.resolve('{}'),
+        headers: { get: (k: string) => headers.get(k) ?? null },
+      });
+
+      client.setAuthToken('token');
+      client.setTokenProvider(async () => 'token');
+      client.setTokenRefresh(jest.fn());
+
+      // searchTenantProtectionScope catches the error and returns success=false
+      const result = await client.searchTenantProtectionScope({ activities: 'uploadText' });
+      expect(result.success).toBe(false);
+      expect(result.statusCode).toBe(401);
+    });
+
+    it('does not call tokenRefresh when no provider is set', async () => {
+      mockFetch({ status: 401, body: {} });
+      client.setAuthToken('token');
+
+      const result = await client.searchTenantProtectionScope({ activities: 'uploadText' });
+      expect(result.success).toBe(false);
+      // fetch should only be called once (no retry)
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     });
   });
 });

@@ -40,11 +40,11 @@ export async function validateInputs(): Promise<ActionConfig> {
       !!workflowRepo && workflowRepoFullName !== targetRepoFullName;
 
     // Debug: log workflow repo resolution details
-    logger.info(`GITHUB_WORKFLOW_REF = '${process.env['GITHUB_WORKFLOW_REF'] || ''}'`);
-    logger.info(`Parsed workflowRepo = ${workflowRepo ? JSON.stringify(workflowRepo) : 'undefined'}`);
-    logger.info(`Target repo = '${targetRepoFullName}', Workflow repo = '${workflowRepoFullName}'`);
-    logger.info(`isExternalWorkflowRepo = ${isExternalWorkflowRepo}`);
-    logger.info(`stateRepoToken present = ${!!stateRepoToken}`);
+    logger.debug(`GITHUB_WORKFLOW_REF = '${process.env['GITHUB_WORKFLOW_REF'] || ''}'`);
+    logger.debug(`Parsed workflowRepo = ${workflowRepo ? JSON.stringify(workflowRepo) : 'undefined'}`);
+    logger.debug(`Target repo = '${targetRepoFullName}', Workflow repo = '${workflowRepoFullName}'`);
+    logger.debug(`isExternalWorkflowRepo = ${isExternalWorkflowRepo}`);
+    logger.debug(`stateRepoToken present = ${!!stateRepoToken}`);
 
     let parsed: UsersConfig;
 
@@ -55,8 +55,10 @@ export async function validateInputs(): Promise<ActionConfig> {
 
     if (isExternalWorkflowRepo && apiTokenForUsersJson) {
       // Fetch users.json from the workflow-definition repo via the GitHub API
+      const tokenSource = stateRepoToken ? 'state-repo-token' : 'GITHUB_TOKEN';
+      const refLabel = workflowRepo!.ref || '(default branch)';
       logger.info(
-        `Fetching users.json from workflow-definition repo ${workflowRepo!.owner}/${workflowRepo!.repo}`
+        `Fetching users.json from workflow-definition repo ${workflowRepo!.owner}/${workflowRepo!.repo} (ref: ${refLabel}, token: ${tokenSource})`
       );
       const octokit = github.getOctokit(apiTokenForUsersJson);
       try {
@@ -79,15 +81,23 @@ export async function validateInputs(): Promise<ActionConfig> {
           `Loaded users.json from ${workflowRepo!.owner}/${workflowRepo!.repo}/${usersJsonPath}`
         );
       } catch (e: any) {
+        if (e?.status === 401 || e?.status === 403) {
+          throw new Error(
+            `Authentication failed (HTTP ${e.status}) when fetching '${usersJsonPath}' from ${workflowRepo!.owner}/${workflowRepo!.repo}. ` +
+            `The ${tokenSource} token does not have read access to this repository. ` +
+            'Ensure your state-repo-token (PAT or GitHub App token) has "contents: read" permission on the workflow-definition repo.'
+          );
+        }
         if (e?.status === 404) {
           throw new Error(
-            `users.json not found at '${usersJsonPath}' in ${workflowRepo!.owner}/${workflowRepo!.repo}. ` +
-            'Create a users.json in your workflow-definition repo with email-to-userId mappings and a defaultUserId.'
+            `users.json not found at '${usersJsonPath}' in ${workflowRepo!.owner}/${workflowRepo!.repo} (ref: ${refLabel}). ` +
+            `This can also happen when the ${tokenSource} token lacks read access to a private repo (GitHub returns 404 instead of 403). ` +
+            'Verify that: (1) the file exists at the expected path and ref, and (2) your state-repo-token has "contents: read" permission on the workflow-definition repo.'
           );
         }
         throw e;
       }
-    } else {
+    }else {
       // Local filesystem fallback (same-repo workflow or no token)
       const fs = await import('fs');
       const path = await import('path');
@@ -144,6 +154,7 @@ export async function validateInputs(): Promise<ActionConfig> {
     // Get optional inputs
     const filePatterns = core.getInput('file-patterns') || '**';
     const excludePatternsRaw = core.getInput('exclude-patterns') || '';
+    const userExcludePatterns = excludePatternsRaw.split(',').map(p => p.trim()).filter(Boolean);
     const maxFileSize = parseInt(core.getInput('max-file-size') || '10485760', 10);
     const debug = core.getBooleanInput('debug');
 
@@ -177,7 +188,7 @@ export async function validateInputs(): Promise<ActionConfig> {
       purviewAccountName,
       purviewEndpoint,
       filePatterns: filePatterns.split(',').map(p => p.trim()).filter(Boolean),
-      excludePatterns: excludePatternsRaw.split(',').map(p => p.trim()).filter(Boolean),
+      excludePatterns: [...new Set(['**/.git/**', ...userExcludePatterns])],
       maxFileSize,
       debug,
       repository,

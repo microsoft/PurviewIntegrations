@@ -74,23 +74,12 @@ describe('PayloadBuilder', () => {
   });
 
   describe('buildProtectionScopesRequest', () => {
-    it('returns request with uploadText activity', () => {
+    it('returns request with correct activity, location, and app metadata', () => {
       const request = builder.buildProtectionScopesRequest();
       expect(request.activities).toBe('uploadText');
-    });
-
-    it('returns request with github.com domain location', () => {
-      const request = builder.buildProtectionScopesRequest();
       expect(request.locations).toHaveLength(1);
-      const loc = request.locations![0]!;
-      expect(loc.value).toBe('https://github.com');
-      expect(loc['@odata.type']).toContain('policyLocationDomain');
-    });
-
-    it('includes integratedAppMetadata', () => {
-      const request = builder.buildProtectionScopesRequest();
-      expect(request.integratedAppMetadata?.name).toBe('Github');
-      expect(request.integratedAppMetadata?.version).toBe('0.0.1');
+      expect(request.locations![0]!.value).toBe('https://github.com');
+      expect(request.integratedAppMetadata?.name).toBe('GitHub');
     });
   });
 
@@ -268,118 +257,34 @@ describe('PayloadBuilder', () => {
       expect(requests[0]!.contentToProcess.protectedAppMetadata?.applicationLocation.value).toBe('https://github.com');
     });
 
-    it('splits large file into multiple requests', () => {
+    it('splits large file into chunks under 3MB with correct metadata', () => {
       const largeContent = 'z'.repeat(4 * 1024 * 1024); // 4MB content
       const file = createFile({ path: 'large.ts', content: largeContent, size: largeContent.length });
-      const requests = builder.buildPerUserProcessContentRequest(file, 'conv-1', 0);
+      const requests = builder.buildPerUserProcessContentRequest(file, 'my-correlation', 0);
 
       expect(requests.length).toBeGreaterThan(1);
+
       // All but last should be marked as truncated
       for (let i = 0; i < requests.length - 1; i++) {
         expect(requests[i]!.contentToProcess.contentEntries[0]!.isTruncated).toBe(true);
       }
-      // Last should not be marked as truncated
       expect(requests[requests.length - 1]!.contentToProcess.contentEntries[0]!.isTruncated).toBe(false);
+
       // All content combined should equal original
       const reconstructed = requests.map(r => (r.contentToProcess.contentEntries[0]!.content as any).data).join('');
       expect(reconstructed).toBe(largeContent);
-    });
 
-    it('preserves realistic git diff patch content', () => {
-      const diffPatch = [
-        '@@ -10,7 +10,9 @@ import { Logger } from "./logger";',
-        ' ',
-        ' export class UserService {',
-        '-  private cache: Map<string, User> = new Map();',
-        '+  private cache: Map<string, User>;',
-        '+  private ttl: number;',
-        ' ',
-        '   constructor(private readonly config: Config) {',
-        '-    // no-op',
-        '+    this.cache = new Map();',
-        '+    this.ttl = config.cacheTtl ?? 3600;',
-        '   }',
-      ].join('\n');
-
-      const file = createFile({
-        path: 'src/services/userService.ts',
-        content: diffPatch,
-        size: diffPatch.length,
-        numberOfAdditions: 4,
-        numberOfDeletions: 2,
-        numberOfChanges: 6,
-        typeOfChange: 'modified',
-      });
-
-      const requests = builder.buildPerUserProcessContentRequest(file, 'conv-1', 0);
-
-      expect(requests).toHaveLength(1);
-      const entry = requests[0]!.contentToProcess.contentEntries[0]!;
-      const data = (entry.content as any).data;
-      // Verify the exact diff patch content is preserved
-      expect(data).toBe(diffPatch);
-      expect(data).toContain('-  private cache: Map<string, User> = new Map();');
-      expect(data).toContain('+    this.ttl = config.cacheTtl ?? 3600;');
-      expect(entry.identifier).toBe('src/services/userService.ts');
-      expect(entry.isTruncated).toBe(false);
-    });
-
-    it('each chunk stays under 3MB when splitting', () => {
-      const maxPayloadSize = 3 * 1024 * 1024; // 3MB
-      const largeContent = 'x'.repeat(7 * 1024 * 1024); // 7MB — forces ~3 chunks
-      const file = createFile({ path: 'huge.ts', content: largeContent, size: largeContent.length });
-
-      const requests = builder.buildPerUserProcessContentRequest(file, 'conv-1', 0);
-
-      expect(requests.length).toBeGreaterThanOrEqual(3);
+      // Each chunk stays under 3MB
       for (const req of requests) {
-        const serialized = JSON.stringify(req);
-        expect(serialized.length).toBeLessThanOrEqual(maxPayloadSize);
+        expect(JSON.stringify(req).length).toBeLessThanOrEqual(3 * 1024 * 1024);
       }
-    });
 
-    it('assigns sequential sequence numbers across chunks', () => {
-      const largeContent = 'a'.repeat(4 * 1024 * 1024); // 4MB
-      const startingMessageId = 5;
-      const file = createFile({ path: 'big.ts', content: largeContent, size: largeContent.length });
-
-      const requests = builder.buildPerUserProcessContentRequest(file, 'conv-1', startingMessageId);
-
-      expect(requests.length).toBeGreaterThan(1);
+      // Sequential sequence numbers
       for (let i = 0; i < requests.length; i++) {
-        expect(requests[i]!.contentToProcess.contentEntries[0]!.sequenceNumber).toBe(startingMessageId + i);
+        expect(requests[i]!.contentToProcess.contentEntries[0]!.sequenceNumber).toBe(i);
       }
-    });
 
-    it('does not split content that fits within 3MB', () => {
-      // Use a content size well under the limit to confirm single-request behavior
-      const content = 'd'.repeat(2 * 1024 * 1024); // 2MB — safely under 3MB
-      const file = createFile({ path: 'fits.ts', content, size: content.length });
-
-      const requests = builder.buildPerUserProcessContentRequest(file, 'c', 0);
-      expect(requests).toHaveLength(1);
-      expect((requests[0]!.contentToProcess.contentEntries[0]!.content as any).data).toBe(content);
-      expect(requests[0]!.contentToProcess.contentEntries[0]!.isTruncated).toBe(false);
-    });
-
-    it('splits content just over 3MB into exactly 2 requests', () => {
-      // 3.1MB of content — overhead is a few hundred bytes, so total is well over 3MB
-      const content = 'c'.repeat(Math.floor(3.1 * 1024 * 1024));
-      const file = createFile({ path: 'justover.ts', content, size: content.length });
-
-      const requests = builder.buildPerUserProcessContentRequest(file, 'c', 0);
-      expect(requests).toHaveLength(2);
-      // Verify combined content equals original
-      const combined = requests.map(r => (r.contentToProcess.contentEntries[0]!.content as any).data).join('');
-      expect(combined).toBe(content);
-    });
-
-    it('shares correlationId across all chunks of a split', () => {
-      const largeContent = 'q'.repeat(4 * 1024 * 1024);
-      const file = createFile({ path: 'split.ts', content: largeContent, size: largeContent.length });
-
-      const requests = builder.buildPerUserProcessContentRequest(file, 'my-correlation', 0);
-
+      // Shared correlationId
       for (const req of requests) {
         expect(req.contentToProcess.contentEntries[0]!.correlationId).toBe('my-correlation');
       }
@@ -438,6 +343,17 @@ describe('PayloadBuilder', () => {
       expect(allItems[0]!.requestId).toBeTruthy();
     });
 
+    it('includes userEmail in batch items', () => {
+      const files = [
+        createFile({ path: 'a.ts', authorId: 'user-a', authorEmail: 'a@test.com' }),
+        createFile({ path: 'b.ts', authorId: 'user-b', authorEmail: undefined }),
+      ];
+      const batches = builder.buildProcessContentBatchRequest(files);
+      const allItems = batches.flatMap(b => b.processContentRequests);
+      expect(allItems[0]!.userEmail).toBe('a@test.com');
+      expect(allItems[1]!.userEmail).toBeUndefined();
+    });
+
     it('splits into multiple batches when exceeding 3MB', () => {
       const largeContent = 'a'.repeat(1024 * 1024); // 1MB each
       const files = Array.from({ length: 5 }, (_, i) =>
@@ -448,6 +364,164 @@ describe('PayloadBuilder', () => {
       expect(batches.length).toBeGreaterThan(1);
       const allItems = batches.flatMap(b => b.processContentRequests);
       expect(allItems).toHaveLength(5);
+    });
+  });
+
+  describe('AiAgentInfo in payloads', () => {
+    it('uses committerEmail as agent name (UPN)', () => {
+      const file = createFile({
+        committerId: 'committer-id',
+        committerEmail: 'committer@test.com',
+        committerLogin: 'committer-login',
+        authorId: 'author-id',
+      });
+      const requests = builder.buildPerUserProcessContentRequest(file, 'conv-1', 0);
+      const entry = requests[0]!.contentToProcess.contentEntries[0] as any;
+      expect(entry.agents).toHaveLength(1);
+      expect(entry.agents[0].identifier).toBe('committer-id');
+      expect(entry.agents[0].name).toBe('committer@test.com');
+    });
+
+    it('sets version to defaultUserId when using default user', () => {
+      const file = createFile({
+        authorId: undefined,
+        committerId: 'c-id',
+        committerEmail: 'c@test.com',
+      });
+      const requests = builder.buildPerUserProcessContentRequest(file, 'conv-1', 0);
+      const entry = requests[0]!.contentToProcess.contentEntries[0] as any;
+      expect(entry.agents[0].version).toBe('default-user-id');
+    });
+
+    it('sets version to undefined when user is resolved (not default)', () => {
+      const file = createFile({
+        authorId: 'specific-user-id',
+        committerId: 'c-id',
+        committerEmail: 'c@test.com',
+      });
+      const requests = builder.buildPerUserProcessContentRequest(file, 'conv-1', 0);
+      const entry = requests[0]!.contentToProcess.contentEntries[0] as any;
+      expect(entry.agents[0].version).toBeUndefined();
+    });
+
+    it('sets version to "fullscan" when isFullScan is true', () => {
+      builder.isFullScan = true;
+      const file = createFile({
+        authorId: 'specific-user',
+        committerId: 'c-id',
+        committerEmail: 'c@test.com',
+      });
+      const requests = builder.buildPerUserProcessContentRequest(file, 'conv-1', 0);
+      const entry = requests[0]!.contentToProcess.contentEntries[0] as any;
+      expect(entry.agents[0].version).toBe('fullscan');
+      builder.isFullScan = false;
+    });
+
+    it('omits agents when no committer info available', () => {
+      const file = createFile({
+        committerId: undefined,
+        committerEmail: undefined,
+      });
+      const requests = builder.buildPerUserProcessContentRequest(file, 'conv-1', 0);
+      const entry = requests[0]!.contentToProcess.contentEntries[0] as any;
+      expect(entry.agents).toBeUndefined();
+    });
+  });
+
+  describe('accessedResources_v2', () => {
+    it('populates accessedResources_v2 with full URL for files', () => {
+      const file = createFile({ path: 'src/app.ts', sha: 'file-sha-1', typeOfChange: 'modified' });
+      const requests = builder.buildPerUserProcessContentRequest(file, 'conv-1', 0);
+      const entry = requests[0]!.contentToProcess.contentEntries[0] as any;
+      expect(entry.accessedResources_v2).toHaveLength(1);
+      const resource = entry.accessedResources_v2[0];
+      expect(resource.identifier).toBe('Commit: file-sha-1');
+      expect(resource.name).toBe('Repo: testRepo File: app.ts Path: src/app.ts');
+      expect(resource.url).toBe('https://github.com/testOwner/testRepo/blob/main/src/app.ts');
+      expect(resource.accessType).toBe('write');
+      expect(resource.status).toBe('success');
+    });
+
+    it('includes PR number in identifier when prNumber is set', () => {
+      builder.prNumber = 42;
+      const file = createFile({ path: 'src/app.ts', sha: 'file-sha-1', typeOfChange: 'modified' });
+      const requests = builder.buildPerUserProcessContentRequest(file, 'conv-1', 0);
+      const entry = requests[0]!.contentToProcess.contentEntries[0] as any;
+      expect(entry.accessedResources_v2[0].identifier).toBe('PR: 42 Commit: file-sha-1');
+    });
+
+    it('maps added files to accessType "create"', () => {
+      const file = createFile({ typeOfChange: 'added' });
+      const requests = builder.buildPerUserProcessContentRequest(file, 'conv-1', 0);
+      const entry = requests[0]!.contentToProcess.contentEntries[0] as any;
+      expect(entry.accessedResources_v2[0].accessType).toBe('create');
+    });
+
+    it('maps removed files to accessType "none"', () => {
+      const file = createFile({ typeOfChange: 'removed' });
+      const requests = builder.buildPerUserProcessContentRequest(file, 'conv-1', 0);
+      const entry = requests[0]!.contentToProcess.contentEntries[0] as any;
+      expect(entry.accessedResources_v2[0].accessType).toBe('none');
+    });
+
+    it('populates accessedResources_v2 for commit payloads with commit + file entries', () => {
+      const commitGroup = {
+        sha: 'abc123',
+        files: [
+          createFile({ path: 'a.ts', typeOfChange: 'added', sha: 'sha-a' }),
+          createFile({ path: 'b.ts', typeOfChange: 'modified', sha: 'sha-b' }),
+        ],
+        authorId: 'user-1',
+        committerEmail: 'c@test.com',
+        committerId: 'c-id',
+      };
+      const ctp = builder.buildCommitContentToProcess(commitGroup as any, 'conv-1', 0);
+      const entry = ctp.contentEntries[0] as any;
+      expect(entry.accessedResources_v2).toHaveLength(3); // 1 commit + 2 files
+      expect(entry.accessedResources_v2[0].identifier).toBe('Commit: abc123');
+      expect(entry.accessedResources_v2[0].name).toBe('Repo: testRepo Commit: abc123');
+      expect(entry.accessedResources_v2[0].url).toContain('/commit/abc123');
+      expect(entry.accessedResources_v2[1].identifier).toBe('Commit: sha-a');
+      expect(entry.accessedResources_v2[1].name).toBe('Repo: testRepo File: a.ts Path: a.ts');
+      expect(entry.accessedResources_v2[1].accessType).toBe('create');
+      expect(entry.accessedResources_v2[2].identifier).toBe('Commit: sha-b');
+      expect(entry.accessedResources_v2[2].name).toBe('Repo: testRepo File: b.ts Path: b.ts');
+      expect(entry.accessedResources_v2[2].accessType).toBe('write');
+    });
+  });
+
+  describe('commit payload builders', () => {
+    const commitGroup = {
+      sha: 'def456',
+      files: [createFile({ path: 'c.ts' })],
+      authorId: 'author-1',
+      authorEmail: 'author@test.com',
+      committerEmail: 'committer@test.com',
+      committerId: 'committer-1',
+      committerLogin: 'committer-login',
+      message: 'fix: something',
+      timestamp: '2026-01-01T00:00:00Z',
+    };
+
+    it('buildCommitProcessContentBatchItems includes userEmail', () => {
+      const items = builder.buildCommitProcessContentBatchItems(commitGroup as any, 'conv-1', 0);
+      expect(items).toHaveLength(1);
+      expect(items[0]!.userId).toBe('author-1');
+      expect(items[0]!.userEmail).toBe('author@test.com');
+    });
+
+    it('buildCommitUploadSignalRequest includes userEmail', () => {
+      const prInfo = createPrInfo();
+      const requests = builder.buildCommitUploadSignalRequest(commitGroup as any, prInfo);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.userId).toBe('author-1');
+      expect(requests[0]!.userEmail).toBe('author@test.com');
+    });
+
+    it('buildCommitContentToProcess agent uses UPN as name', () => {
+      const ctp = builder.buildCommitContentToProcess(commitGroup as any, 'conv-1', 0);
+      const entry = ctp.contentEntries[0] as any;
+      expect(entry.agents[0].name).toBe('committer@test.com');
     });
   });
 

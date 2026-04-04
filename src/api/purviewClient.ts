@@ -6,6 +6,8 @@ export class PurviewClient {
   private readonly logger: Logger;
   private readonly retryHandler: RetryHandler;
   private authToken: string | null = null;
+  private tokenProvider: (() => Promise<string>) | null = null;
+  private tokenRefresh: (() => void) | null = null;
   private readonly baseUrl: string;
   
   constructor(private readonly config: ActionConfig) {
@@ -16,6 +18,33 @@ export class PurviewClient {
   
   setAuthToken(token: string): void {
     this.authToken = token;
+  }
+
+  /**
+   * Set a callback that returns a fresh access token.  When set, the provider
+   * is called before every request (it should cache internally) and again
+   * after a 401 to attempt a single token-refresh retry.
+   */
+  setTokenProvider(provider: () => Promise<string>): void {
+    this.tokenProvider = provider;
+  }
+
+  /**
+   * Set a callback invoked before the 401-retry to invalidate any cached
+   * token so the next tokenProvider call fetches a genuinely new token.
+   */
+  setTokenRefresh(refresh: () => void): void {
+    this.tokenRefresh = refresh;
+  }
+
+  private async resolveAuthToken(): Promise<string> {
+    if (this.tokenProvider) {
+      return await this.tokenProvider();
+    }
+    if (this.authToken) {
+      return this.authToken;
+    }
+    throw new Error('Authentication token not set');
   }
 
   async processContentAsync(payload: ProcessContentBatchRequest): Promise<ApiResponse> {
@@ -37,11 +66,7 @@ export class PurviewClient {
       return result;
     } catch (error) {
       this.logger.error('Failed to process content asynchronously', { error });
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        statusCode: (error as any)?.statusCode
-      };
+      return this.buildErrorResponse(error);
     }
   }
 
@@ -72,11 +97,7 @@ export class PurviewClient {
       return result;
     } catch (error) {
       this.logger.error(`Failed to process content for user ${userId}`, { error });
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        statusCode: (error as any)?.statusCode
-      };
+      return this.buildErrorResponse(error);
     }
   }
 
@@ -85,7 +106,7 @@ export class PurviewClient {
       throw new Error('Authentication token not set');
     }
 
-    this.logger.info(`Uploading signal for ${payload.contentMetadata.contentEntries[0]?.identifier}`);
+    this.logger.debug(`Uploading signal for ${payload.contentMetadata.contentEntries[0]?.identifier}`);
 
     const endpoint = `${this.baseUrl}/users/${payload.userId}/dataSecurityAndGovernance/activities/contentActivities`;
     let payloadString: string = JSON.stringify(payload, this.jsonReplacer);
@@ -99,10 +120,7 @@ export class PurviewClient {
       return result;
     } catch (error) {
       this.logger.error('Failed to upload signal', { error });
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error'
-      };
+      return this.buildErrorResponse(error);
     }
   }
 
@@ -128,11 +146,7 @@ export class PurviewClient {
       return result;
     } catch (error) {
       this.logger.error('Failed to search tenant protection scope', { error });
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        statusCode: (error as any)?.statusCode
-      };
+      return this.buildErrorResponse(error);
     }
   }
 
@@ -158,11 +172,7 @@ export class PurviewClient {
       return result;
     } catch (error) {
       this.logger.error(`Failed to search protection scope for user ${userId}`, { error });
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        statusCode: (error as any)?.statusCode
-      };
+      return this.buildErrorResponse(error);
     }
   }
 
@@ -188,26 +198,31 @@ export class PurviewClient {
       return result;
     } catch (error) {
       this.logger.error('Failed to get user info', { error });
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error'
-      };
+      return this.buildErrorResponse(error);
     }
   }
 
   private async sendRequest(endpoint: string, payload: string | null = null, method: string = "POST", additionalHeaders: Record<string, string> = {}, operationName: string = 'Unknown'): Promise<ApiResponse> {
+    return this.sendRequestInner(endpoint, payload, method, additionalHeaders, operationName, true);
+  }
+
+  private async sendRequestInner(endpoint: string, payload: string | null, method: string, additionalHeaders: Record<string, string>, operationName: string, allowAuthRetry: boolean): Promise<ApiResponse> {
+    const currentToken = await this.resolveAuthToken();
+    const requestId = this.generateRequestId();
     const headers: Record<string, string> = {
-      'Authorization': `Bearer ${this.authToken}`,
+      'Authorization': `Bearer ${currentToken}`,
       'Content-Type': 'application/json',
-      'X-Request-Id': this.generateRequestId(),
+      'X-Request-Id': requestId,
       'User-Agent': 'PurviewGitHubAction/1.0',
       ...additionalHeaders
     };
     
     this.logger.startGroup('Purview API Request');
-    this.logger.debug('Sending request', { 
-      endpoint: this.sanitizeEndpoint(endpoint), 
-      payloadSize: JSON.stringify(payload).length
+    this.logger.debug(`[${operationName}] Request`, { 
+      endpoint: this.sanitizeEndpoint(endpoint),
+      method,
+      requestId,
+      additionalHeaders: Object.keys(additionalHeaders),
     });
     
     try {
@@ -218,21 +233,37 @@ export class PurviewClient {
       });
       
       const responseText = await response.text();
-      const requestId: string | null = response.headers.get('client-request-id');
-      this.logger.info(`[${operationName}] Received response with status: ${response.status}, correlation ID: ${requestId}`);
+      const correlationId: string | null = response.headers.get('client-request-id');
+      this.logger.info(`[${operationName}] Received response with status: ${response.status}, correlation ID: ${correlationId}`);
       
       if (!response.ok) {
+        this.logger.debug(`[${operationName}] Error response body`, {
+          status: response.status,
+          correlationId,
+          body: this.sanitizeErrorResponse(responseText),
+        });
         this.logger.error('API request failed', {
           status: response.status,
           statusText: response.statusText,
-          correlationId: requestId,
+          correlationId,
           response: this.sanitizeErrorResponse(responseText)
         });
         
         // Handle specific error cases
         if (response.status === 401) {
+          // If we have a token provider, clear the stale token and retry once
+          if (allowAuthRetry && this.tokenProvider) {
+            this.logger.info(`[${operationName}] 401 received — refreshing token and retrying`);
+            if (this.tokenRefresh) {
+              this.tokenRefresh();
+            }
+            this.logger.endGroup();
+            return this.sendRequestInner(endpoint, payload, method, additionalHeaders, operationName, false);
+          }
           const err = new Error('Authentication failed. Token may be expired.');
           (err as any).statusCode = 401;
+          (err as any).correlationId = correlationId;
+          (err as any).responseBody = this.sanitizeErrorResponse(responseText);
           throw err;
         }
         
@@ -243,6 +274,8 @@ export class PurviewClient {
         
         const err = new Error(`API request failed: ${response.status} - ${response.statusText}`);
         (err as any).statusCode = response.status;
+        (err as any).correlationId = correlationId;
+        (err as any).responseBody = this.sanitizeErrorResponse(responseText);
         throw err;
       }
       
@@ -277,6 +310,20 @@ export class PurviewClient {
       return value.substring(0, 100) + '... [truncated in logs]';
     }
     return value;
+  }
+
+  private buildErrorResponse(error: unknown): ApiResponse {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    const statusCode = (error as any)?.statusCode as number | undefined;
+    const correlationId = (error as any)?.correlationId as string | undefined;
+    const responseBody = (error as any)?.responseBody as string | undefined;
+    return {
+      success: false,
+      error: message,
+      statusCode,
+      correlationId,
+      responseBody,
+    };
   }
   
   private generateRequestId(): string {

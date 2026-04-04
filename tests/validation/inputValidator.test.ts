@@ -93,6 +93,16 @@ describe('inputValidator', () => {
     expect(config.maxFileSize).toBe(10485760);
   });
 
+  it('always includes **/.git/** in excludePatterns even with custom patterns', async () => {
+    setupInputMocks({ 'exclude-patterns': '**/.git/**,dist/**' });
+    const config = await validateInputs();
+    expect(config.excludePatterns).toContain('**/.git/**');
+    expect(config.excludePatterns).toContain('dist/**');
+    // Should be deduplicated
+    const gitPatternCount = config.excludePatterns!.filter(p => p === '**/.git/**').length;
+    expect(gitPatternCount).toBe(1);
+  });
+
   it('throws on invalid client-id GUID', async () => {
     setupInputMocks({ 'client-id': 'not-a-guid' });
     await expect(validateInputs()).rejects.toThrow(/Invalid client-id/);
@@ -165,5 +175,72 @@ describe('inputValidator', () => {
       'state-repo-token': '',
     });
     await expect(validateInputs()).rejects.toThrow(/state-repo-branch.*state-repo-token/);
+  });
+
+  describe('cross-repo users.json fetch', () => {
+    const github = require('@actions/github');
+
+    beforeEach(() => {
+      process.env['GITHUB_WORKFLOW_REF'] =
+        'external-owner/ExternalWorkflow/.github/workflows/ci.yml@refs/heads/main';
+    });
+
+    function setupCrossRepoMocks(overrides: Record<string, string> = {}) {
+      setupInputMocks({
+        'state-repo-token': 'ghp_faketoken',
+        'users-json-path': 'users.json',
+        ...overrides,
+      });
+    }
+
+    it('throws helpful message on 404 mentioning token and ref', async () => {
+      const err: any = new Error('Not Found');
+      err.status = 404;
+      const mockGetContent = jest.fn().mockRejectedValue(err);
+      github.getOctokit.mockReturnValue({ rest: { repos: { getContent: mockGetContent } } });
+      setupCrossRepoMocks();
+
+      await expect(validateInputs()).rejects.toThrow(/token lacks read access.*private repo/);
+    });
+
+    it('throws auth error on 403', async () => {
+      const err: any = new Error('Forbidden');
+      err.status = 403;
+      const mockGetContent = jest.fn().mockRejectedValue(err);
+      github.getOctokit.mockReturnValue({ rest: { repos: { getContent: mockGetContent } } });
+      setupCrossRepoMocks();
+
+      await expect(validateInputs()).rejects.toThrow(/Authentication failed.*403/);
+    });
+
+    it('throws auth error on 401', async () => {
+      const err: any = new Error('Unauthorized');
+      err.status = 401;
+      const mockGetContent = jest.fn().mockRejectedValue(err);
+      github.getOctokit.mockReturnValue({ rest: { repos: { getContent: mockGetContent } } });
+      setupCrossRepoMocks();
+
+      await expect(validateInputs()).rejects.toThrow(/Authentication failed.*401/);
+    });
+
+    it('succeeds when API returns valid content', async () => {
+      const encoded = Buffer.from(JSON.stringify(validUsersJson)).toString('base64');
+      const mockGetContent = jest.fn().mockResolvedValue({
+        data: { content: encoded, type: 'file' },
+      });
+      github.getOctokit.mockReturnValue({ rest: { repos: { getContent: mockGetContent } } });
+      setupCrossRepoMocks();
+
+      const config = await validateInputs();
+      expect(config.userId).toBe('default-user-123');
+      expect(mockGetContent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          owner: 'external-owner',
+          repo: 'ExternalWorkflow',
+          path: 'users.json',
+          ref: 'refs/heads/main',
+        })
+      );
+    });
   });
 });

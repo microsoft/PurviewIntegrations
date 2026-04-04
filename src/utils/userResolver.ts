@@ -41,12 +41,12 @@ export class UserResolver {
     if (email) {
       const userId = this.emailToUserId.get(email.toLowerCase());
       if (userId) {
-        this.logger.info(`Resolved userId for email '${email}': ${userId} (from users.json mapping)`);
+        this.logger.debug(`Resolved userId for email '${email}': ${userId} (from users.json mapping)`);
         return userId;
       }
     }
 
-    this.logger.info(`No users.json mapping found for email '${email ?? 'unknown'}', using default userId: ${this.defaultUserId}`);
+    this.logger.debug(`No users.json mapping found for email '${email ?? 'unknown'}', using default userId: ${this.defaultUserId}`);
     return this.defaultUserId;
   }
 
