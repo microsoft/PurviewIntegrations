@@ -151,6 +151,13 @@ export async function validateInputs(): Promise<ActionConfig> {
       validateClientCertificatePem(clientCertificatePem);
     }
 
+    // Client secret is read from the AZURE_CLIENT_SECRET environment variable.
+    // Certificate auth takes priority when both are provided.
+    const clientSecret = (process.env['AZURE_CLIENT_SECRET'] || '').trim() || undefined;
+    if (clientCertificatePem && clientSecret) {
+      logger.info('Both client-certificate and AZURE_CLIENT_SECRET are provided; certificate auth takes priority.');
+    }
+
     // Get optional inputs
     const filePatterns = core.getInput('file-patterns') || '**';
     const excludePatternsRaw = core.getInput('exclude-patterns') || '';
@@ -184,6 +191,7 @@ export async function validateInputs(): Promise<ActionConfig> {
     const config: ActionConfig = {
       clientId,
       clientCertificatePem,
+      clientSecret,
       tenantId,
       purviewAccountName,
       purviewEndpoint,

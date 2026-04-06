@@ -524,15 +524,14 @@ export class GitHubActionsRunner {
       '',
       'The following file(s) were flagged by data security policies and **blocked**:',
       '',
-      '| File | Policy | Action |',
-      '|------|--------|--------|',
+      '| File | Action |',
+      '|------|--------|',
     ];
 
     for (const bf of blockedFiles) {
       for (const pa of bf.policyActions) {
-        const policy = pa.policyName || pa.policyId || 'Unknown';
         const action = pa.restrictionAction || pa.action;
-        lines.push(`| \`${bf.filePath}\` | ${policy} | ${action} |`);
+        lines.push(`| \`${bf.filePath}\` | ${action} |`);
       }
     }
 
@@ -553,11 +552,10 @@ export class GitHubActionsRunner {
     if (blocked.length > 0) {
       summary.addHeading('Blocked Files', 3);
       summary.addTable([
-        [{ data: 'File', header: true }, { data: 'Policy', header: true }, { data: 'Action', header: true }],
+        [{ data: 'File', header: true }, { data: 'Action', header: true }],
         ...blocked.flatMap(bf =>
           bf.policyActions.map(pa => [
             bf.filePath,
-            pa.policyName || pa.policyId || 'Unknown',
             pa.restrictionAction || pa.action,
           ])
         ),

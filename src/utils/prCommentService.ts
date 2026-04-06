@@ -48,15 +48,14 @@ export class PrCommentService {
       '',
       'The following file(s) were flagged by data security policies and **blocked**:',
       '',
-      '| File | Policy | Action |',
-      '|------|--------|--------|',
+      '| File | Action |',
+      '|------|--------|',
     ];
 
     for (const bf of blockedFiles) {
       for (const pa of bf.policyActions) {
-        const policy = pa.policyName || pa.policyId || 'Unknown';
         const action = pa.restrictionAction || pa.action;
-        lines.push(`| \`${bf.filePath}\` | ${policy} | ${action} |`);
+        lines.push(`| \`${bf.filePath}\` | ${action} |`);
       }
     }
 

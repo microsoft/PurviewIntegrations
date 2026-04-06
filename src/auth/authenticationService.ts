@@ -8,7 +8,7 @@ export class AuthenticationService {
   private readonly logger: Logger;
   private readonly msalApp: ConfidentialClientApplication;
   private cachedToken: AuthToken | null = null;
-  private readonly authMode: 'certificate' | 'federated';
+  private readonly authMode: 'certificate' | 'clientSecret' | 'federated';
   
   constructor(private readonly config: ActionConfig) {
     this.logger = new Logger('AuthenticationService');
@@ -26,6 +26,17 @@ export class AuthenticationService {
           clientId: this.config.clientId,
           authority,
           clientCertificate
+        }
+      });
+    } else if (this.config.clientSecret) {
+      this.authMode = 'clientSecret';
+      this.logger.info('Authentication mode: client-secret');
+
+      this.msalApp = new ConfidentialClientApplication({
+        auth: {
+          clientId: this.config.clientId,
+          authority,
+          clientSecret: this.config.clientSecret
         }
       });
     } else {

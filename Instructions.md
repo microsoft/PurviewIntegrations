@@ -302,7 +302,6 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           client-certificate: ${{ secrets.AZURE_CLIENT_CERTIFICATE }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          user-id: ${{ secrets.AZURE_USER_ID }}
 ```
 
 ### Full Workflow: All Options
@@ -353,13 +352,14 @@ jobs:
           # ══════════════════════════════════════
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          user-id: ${{ secrets.AZURE_USER_ID }}
 
           # ── Authentication (choose one) ──
           # Certificate auth: provide the PEM secret
           client-certificate: ${{ secrets.AZURE_CLIENT_CERTIFICATE }}
           # Client-secret auth: remove the line above and pass the secret via the
           # AZURE_CLIENT_SECRET env variable (see env section above).
+          # OIDC federated auth: remove the line above and configure federated
+          # credentials in your Entra App Registration (see Appendix).
 
           # ══════════════════════════════════════
           # Optional inputs
@@ -485,7 +485,6 @@ jobs:
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          user-id: ${{ secrets.AZURE_USER_ID }}
           file-patterns: '**'
           debug: true
 ```
