@@ -173,11 +173,17 @@ When triggered via `workflow_dispatch`, the action will automatically perform a 
 
 The action follows a modular architecture with clear separation of concerns:
 
-- **Authentication Service**: Handles OIDC token exchange and caching
-- **File Processor**: Manages file discovery and content extraction
-- **Purview Client**: Implements API communication with retry logic
-- **Payload Builder**: Constructs optimized payloads with chunking
-- **Logger**: Provides structured logging with sensitive data protection
+- **Authentication Service**: Handles OIDC token exchange, certificate-based, and client-secret authentication via MSAL, with token caching and refresh
+- **File Processor**: Manages file discovery, content extraction, binary detection, and diff computation (LCS-based)
+- **Purview Client**: Implements API communication with retry logic and exponential backoff for processContent, processContentAsync, contentActivities, and protection scope endpoints
+- **Payload Builder**: Constructs optimized payloads with chunking (content ≤ 3 MB, request ≤ 3.7 MB, max 64 items per batch)
+- **Full Scan Service**: Orchestrates first-run full repository scans including state tracking, tenant/user protection scope resolution, and commit processing
+- **Block Detector**: Identifies `blockAccess` and `restrict → block` policy actions from processContent responses
+- **PR Comment Service**: Posts PR review comments listing blocked files when data security policies trigger block actions
+- **User Resolver**: Maps commit author emails to Azure AD user IDs via `users.json` mappings and Microsoft Graph API lookups with caching
+- **State Service**: Manages first-run state markers (`.purview/state/<owner>-<repo>.json`) in the workflow-definition repository
+- **Retry Handler**: Provides exponential backoff retry strategy with jitter for transient failures (429, 5xx, network errors)
+- **Logger**: Provides structured logging with sensitive data redaction
 
 ## Security Considerations
 

@@ -1,6 +1,7 @@
 export interface ActionConfig {
   clientId: string;
   clientCertificatePem?: string;
+  clientSecret?: string;
   tenantId: string;
   purviewAccountName: string;
   purviewEndpoint: string;

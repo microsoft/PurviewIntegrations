@@ -58,8 +58,8 @@ describe('PrCommentService', () => {
     expect(call.event).toBe('COMMENT');
     expect(call.body).toContain('Purview Data Security');
     expect(call.body).toContain('src/secrets.ts');
-    expect(call.body).toContain('Credit Card Policy');
     expect(call.body).toContain('blockAccess');
+    expect(call.body).not.toContain('Policy');
   });
 
   it('includes multiple files and actions in the table', async () => {
@@ -69,8 +69,8 @@ describe('PrCommentService', () => {
         filePath: 'file1.txt',
         userId: 'u1',
         policyActions: [
-          { action: 'blockAccess', policyName: 'Policy-A' },
-          { action: 'restrict', restrictionAction: 'block', policyName: 'Policy-B' },
+          { action: 'blockAccess', policyName: 'Policy-A', policyId: 'pid-A' },
+          { action: 'restrict', restrictionAction: 'block', policyName: 'Policy-B', policyId: 'pid-B' },
         ],
       },
       {
@@ -87,42 +87,11 @@ describe('PrCommentService', () => {
     const body = mockCreateReview.mock.calls[0][0].body as string;
     expect(body).toContain('file1.txt');
     expect(body).toContain('file2.txt');
-    expect(body).toContain('Policy-A');
-    expect(body).toContain('Policy-B');
-    // When no policyName, should use policyId
-    expect(body).toContain('pid-1');
-  });
-
-  it('uses policyId when policyName is missing', async () => {
-    const service = new PrCommentService(mockOctokit, 'o', 'r', 1);
-    const blockedFiles: BlockedFileResult[] = [
-      {
-        filePath: 'data.csv',
-        userId: 'u1',
-        policyActions: [
-          { action: 'blockAccess', policyId: 'abc-123' },
-        ],
-      },
-    ];
-
-    await service.postBlockedFilesReview(blockedFiles);
-    const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body).toContain('abc-123');
-  });
-
-  it('shows "Unknown" when neither policyName nor policyId is present', async () => {
-    const service = new PrCommentService(mockOctokit, 'o', 'r', 1);
-    const blockedFiles: BlockedFileResult[] = [
-      {
-        filePath: 'unknown-policy.txt',
-        userId: 'u1',
-        policyActions: [{ action: 'blockAccess' }],
-      },
-    ];
-
-    await service.postBlockedFilesReview(blockedFiles);
-    const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body).toContain('Unknown');
+    expect(body).toContain('blockAccess');
+    expect(body).toContain('block');
+    expect(body).not.toContain('pid-A');
+    expect(body).not.toContain('pid-B');
+    expect(body).not.toContain('pid-1');
   });
 
   it('re-throws error when createReview fails', async () => {

@@ -97,8 +97,8 @@ flowchart TD
     nextCommit --> hasBlockedFiles{blockedFiles<br/>not empty?}
     hasBlockedFiles -->|Yes| eventType{Event type?}
     hasBlockedFiles -->|No| continueToOutputs[Continue]
-    eventType -->|pull_request| postPrComment[Post PR review comment<br/>pulls.createReview<br/>blocked file details table]
-    eventType -->|push| postCommitComment[Post commit comment<br/>repos.createCommitComment<br/>blocked file details table]
+    eventType -->|pull_request| postPrComment[Post PR review comment<br/>pulls.createReview<br/>blocked files: File + Action table]
+    eventType -->|push| postCommitComment[Post commit comment<br/>repos.createCommitComment<br/>blocked files: File + Action table]
     eventType -->|other| skipNotification[Skip notification]
     postPrComment --> continueToOutputs
     postCommitComment --> continueToOutputs
@@ -107,7 +107,7 @@ flowchart TD
     noChangedFilesLog --> setOutputs
     skipDiff --> setOutputs
     continueToOutputs --> setOutputs[Set action outputs<br/>processed-files, failed-requests,<br/>blocked-files JSON]
-    setOutputs --> writeSummary[Write Job Summary<br/>file count + failures +<br/>blocked files table]
+    setOutputs --> writeSummary[Write Job Summary<br/>file count + failures +<br/>blocked files: File + Action table]
     writeSummary --> hasBlockedFinal{blockedFiles<br/>count > 0?}
     hasBlockedFinal -->|Yes| actionFailed[core.setFailed<br/>Action FAILED:<br/>blocked files detected]
     hasBlockedFinal -->|No| actionSucceeded[Action succeeded]

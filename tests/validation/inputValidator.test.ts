@@ -72,6 +72,7 @@ describe('inputValidator', () => {
     jest.clearAllMocks();
     delete process.env['GITHUB_WORKFLOW_REF'];
     delete process.env['GITHUB_WORKSPACE'];
+    delete process.env['AZURE_CLIENT_SECRET'];
     fs.writeFileSync(usersJsonPath, JSON.stringify(validUsersJson), 'utf-8');
     setupInputMocks();
   });
@@ -175,6 +176,33 @@ describe('inputValidator', () => {
       'state-repo-token': '',
     });
     await expect(validateInputs()).rejects.toThrow(/state-repo-branch.*state-repo-token/);
+  });
+
+  it('reads AZURE_CLIENT_SECRET from environment variable', async () => {
+    process.env['AZURE_CLIENT_SECRET'] = 'my-super-secret';
+    const config = await validateInputs();
+    expect(config.clientSecret).toBe('my-super-secret');
+  });
+
+  it('sets clientSecret to undefined when AZURE_CLIENT_SECRET is not set', async () => {
+    const config = await validateInputs();
+    expect(config.clientSecret).toBeUndefined();
+  });
+
+  it('keeps both clientCertificatePem and clientSecret when both are provided', async () => {
+    const validPem = [
+      '-----BEGIN CERTIFICATE-----',
+      'MIIBkTCB+wIJALR...',
+      '-----END CERTIFICATE-----',
+      '-----BEGIN PRIVATE KEY-----',
+      'MIIBvAIBADANBgk...',
+      '-----END PRIVATE KEY-----',
+    ].join('\n');
+    setupInputMocks({ 'client-certificate': validPem });
+    process.env['AZURE_CLIENT_SECRET'] = 'my-secret';
+    const config = await validateInputs();
+    expect(config.clientCertificatePem).toBe(validPem);
+    expect(config.clientSecret).toBe('my-secret');
   });
 
   describe('cross-repo users.json fetch', () => {
