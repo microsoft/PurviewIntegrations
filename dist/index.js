@@ -64986,6 +64986,7 @@ class GitHubActionsRunner {
             // by getWorkflowRun belongs to the *external* workflow-definition repo,
             // not the target repo.  listWorkflowRuns would 404 in that case.
             const perPage = 10;
+            const maxRuns = 20;
             let page = 1;
             let totalFetched = 0;
             while (true) {
@@ -65010,7 +65011,7 @@ class GitHubActionsRunner {
                 }
                 totalFetched += runs.workflow_runs.length;
                 this.logger.info(`Checked ${totalFetched} run(s) so far (${matchingRuns.length} matched workflow), no match in commit list yet`);
-                if (totalFetched >= runs.total_count) {
+                if (totalFetched >= runs.total_count || totalFetched >= maxRuns) {
                     break;
                 }
                 page++;
