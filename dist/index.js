@@ -65172,11 +65172,11 @@ async function validateInputs() {
         if (clientCertificatePem) {
             validateClientCertificatePem(clientCertificatePem);
         }
-        // Client secret is read from the AZURE_CLIENT_SECRET environment variable.
+        // Client secret is read from the client-secret action input.
         // Certificate auth takes priority when both are provided.
-        const clientSecret = (process.env['AZURE_CLIENT_SECRET'] || '').trim() || undefined;
+        const clientSecret = (getInput('client-secret', { required: false }) || '').trim() || undefined;
         if (clientCertificatePem && clientSecret) {
-            logger.info('Both client-certificate and AZURE_CLIENT_SECRET are provided; certificate auth takes priority.');
+            logger.info('Both client-certificate and client-secret are provided; certificate auth takes priority.');
         }
         // Get optional inputs
         const filePatterns = getInput('file-patterns') || '**';

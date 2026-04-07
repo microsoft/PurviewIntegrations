@@ -90,6 +90,7 @@ For each commit author, the action checks the email against the `users` array. I
 |-------|-------------|----------|---------|
 | `client-id` | Azure AD application client ID | Yes | - |
 | `client-certificate` | PEM containing private key + certificate for certificate-based auth. If omitted, uses GitHub OIDC federated credentials. | No | - |
+| `client-secret` | Azure AD application client secret for secret-based auth. If omitted, uses GitHub OIDC federated credentials. | No | - |
 | `tenant-id` | Azure AD tenant ID | Yes | - |
 | `users-json-path` | Path to `users.json` in the workflow-definition repo (relative to repo root). In cross-repo workflows the file is fetched via the GitHub API using `state-repo-token`. | No | `users.json` |
 | `purview-account-name` | Name of the Purview account | No | - |

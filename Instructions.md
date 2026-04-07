@@ -83,7 +83,7 @@ Choose one of the following authentication methods for the action to authenticat
 3. Provide a description (e.g., `Purview GitHub Action`) and select an expiration period.
 4. Click **Add**.
 5. Copy the **Value** of the newly created secret immediately — it will not be shown again.
-6. Store this value as a GitHub secret named `AZURE_CLIENT_SECRET` (see [Step 5](#5-add-github-secrets)).
+6. Store this value as a GitHub secret named `AZURE_CLIENT_SECRET` (see [Step 5](#5-add-github-secrets)), then pass it via the `client-secret` action input.
 
 ---
 
@@ -138,7 +138,7 @@ Each organization that uses the Purview action needs the following secrets confi
    | `AZURE_CLIENT_ID` | The **Application (client) ID** from your Entra App Registration | Yes |
    | `AZURE_TENANT_ID` | The **Directory (tenant) ID** from your Entra App Registration | Yes |
    | `AZURE_CLIENT_CERTIFICATE` | Full PEM file contents (private key + certificate) — **only if using certificate auth** | Conditional |
-   | `AZURE_CLIENT_SECRET` | The **Client Secret** value from your Entra App Registration — **only if using client-secret auth** | Conditional |
+   | `AZURE_CLIENT_SECRET` | The **Client Secret** value from your Entra App Registration — **only if using client-secret auth** (passed via the `client-secret` action input) | Conditional |
    | `STATE_REPO_TOKEN` | A **Personal Access Token** or **Fine-Grained Token** with `contents:write` to the workflow repository (for state tracking) | Optional |
 
 3. Set the **Repository access** policy to grant access to the repositories that will run the workflow.
@@ -344,8 +344,6 @@ jobs:
         uses: PersonalPurview/purview-github-action@main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # ── (Client-Secret auth only) Uncomment the line below ──
-          # AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
         with:
           # ══════════════════════════════════════
           # Required inputs
@@ -356,9 +354,9 @@ jobs:
           # ── Authentication (choose one) ──
           # Certificate auth: provide the PEM secret
           client-certificate: ${{ secrets.AZURE_CLIENT_CERTIFICATE }}
-          # Client-secret auth: remove the line above and pass the secret via the
-          # AZURE_CLIENT_SECRET env variable (see env section above).
-          # OIDC federated auth: remove the line above and configure federated
+          # Client-secret auth: remove the line above and uncomment the line below
+          # client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          # OIDC federated auth: remove both lines above and configure federated
           # credentials in your Entra App Registration (see Appendix).
 
           # ══════════════════════════════════════
