@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc",
     "package": "ncc build dist/index.js -o dist",
-    "test": "npx jest --passWithNoTests",
+    "test": "jest --passWithNoTests",
     "lint": "eslint src/**/*.ts",
     "format": "prettier --write src/**/*.ts",
     "all": "npm run build && npm run package && npm run test",

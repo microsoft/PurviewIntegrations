@@ -28,13 +28,22 @@ extends:
               - checkout: self
                 clean: true
 
-              - task: NodeTool@0
+              - task: UseNode@1
                 inputs:
                   versionSpec: '24.x'
                 displayName: Use Node.js 24
 
-              - script: npm install
+              - script: npm ci --include=dev --no-audit --no-fund
                 displayName: Install dependencies
+                env:
+                  CI: 'true'
+                  HUSKY: '0'
+                  NODE_ENV: development
+                  NPM_CONFIG_PRODUCTION: 'false'
 
-              - script: npm test
-                displayName: Run tests
+              - script: |
+                  npm run build
+                  npm test -- --runInBand
+                displayName: Build and run tests
+                env:
+                  CI: 'true'
