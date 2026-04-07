@@ -20,6 +20,7 @@ See [.github/workflows/purview-scan.yml](.github/workflows/purview-scan.yml). It
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `client-certificate` | PEM containing private key + certificate. If omitted, GitHub OIDC federated credentials are used. | — |
+| `client-secret` | Azure AD application client secret. If omitted, GitHub OIDC federated credentials are used. | — |
 | `users-json-path` | Path to `users.json` (relative to workspace root) that maps commit author emails to Azure AD user IDs. | `users.json` |
 | `file-patterns` | Comma-separated glob patterns of files to scan. | `**` |
 | `exclude-patterns` | Comma-separated glob patterns of files to exclude. | `**/.git/**` |

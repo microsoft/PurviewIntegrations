@@ -9,6 +9,9 @@ inputs:
   client-certificate:
     description: 'Optional PEM containing private key + certificate. If provided, certificate auth is used (takes priority over client-secret). If omitted, falls back to client-secret or GitHub OIDC federated credentials.'
     required: false
+  client-secret:
+    description: 'Azure AD application client secret. If provided (and client-certificate is not), client-secret auth is used. If omitted, falls back to GitHub OIDC federated credentials.'
+    required: false
   tenant-id:
     description: 'Azure AD tenant ID'
     required: true

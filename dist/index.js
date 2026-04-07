@@ -62044,7 +62044,7 @@ class PurviewClient {
         }
         this.logger.info(`Processing content asynchronously.`);
         const endpoint = `${this.baseUrl}/security/dataSecurityAndGovernance/processContentAsync`;
-        let payloadString = JSON.stringify(payload, this.jsonReplacer);
+        let payloadString = JSON.stringify(payload);
         try {
             const result = await this.retryHandler.executeWithRetry(async () => this.sendRequest(endpoint, payloadString, 'POST', {}, 'ProcessContentAsync'), 'ProcessContentAsync');
             return result;
@@ -62060,7 +62060,7 @@ class PurviewClient {
         }
         this.logger.info(`Processing content for user ${userId} (mode: ${inline ? 'inline' : 'offline'})`);
         const endpoint = `${this.baseUrl}/users/${userId}/dataSecurityAndGovernance/processContent`;
-        const payloadString = JSON.stringify(request, this.jsonReplacer);
+        const payloadString = JSON.stringify(request);
         const additionalHeaders = {};
         if (scopeIdentifier) {
             additionalHeaders['If-None-Match'] = scopeIdentifier;
@@ -62083,7 +62083,7 @@ class PurviewClient {
         }
         this.logger.debug(`Uploading signal for ${payload.contentMetadata.contentEntries[0]?.identifier}`);
         const endpoint = `${this.baseUrl}/users/${payload.userId}/dataSecurityAndGovernance/activities/contentActivities`;
-        let payloadString = JSON.stringify(payload, this.jsonReplacer);
+        let payloadString = JSON.stringify(payload);
         try {
             const result = await this.retryHandler.executeWithRetry(async () => this.sendRequest(endpoint, payloadString, 'POST', {}, 'UploadSignal'), 'UploadSignal');
             return result;
@@ -62099,7 +62099,7 @@ class PurviewClient {
         }
         this.logger.info(`Searching tenant protection scope`);
         const endpoint = `${this.baseUrl}/security/dataSecurityAndGovernance/protectionScopes/compute`;
-        let payloadString = JSON.stringify(payload, this.jsonReplacer);
+        let payloadString = JSON.stringify(payload);
         try {
             const result = await this.retryHandler.executeWithRetry(async () => this.sendRequest(endpoint, payloadString, 'POST', {}, 'SearchTenantProtectionScope'), 'SearchTenantProtectionScope');
             const scopeCount = result.data?.value?.length ?? 0;
@@ -62117,7 +62117,7 @@ class PurviewClient {
         }
         this.logger.info(`Searching protection scope for user ${userId}`);
         const endpoint = `${this.baseUrl}/users/${userId}/dataSecurityAndGovernance/protectionScopes/compute`;
-        let payloadString = JSON.stringify(payload, this.jsonReplacer);
+        let payloadString = JSON.stringify(payload);
         try {
             const result = await this.retryHandler.executeWithRetry(async () => this.sendRequest(endpoint, payloadString, 'POST', {}, 'SearchUserProtectionScope'), 'SearchUserProtectionScope');
             const scopeCount = result.data?.value?.length ?? 0;
@@ -62239,13 +62239,6 @@ class PurviewClient {
             this.logger.endGroup();
             throw error;
         }
-    }
-    jsonReplacer(_key, value) {
-        // Remove sensitive data from logs
-        if (typeof value === 'string' && value.length > 1000) {
-            return value.substring(0, 100) + '... [truncated in logs]';
-        }
-        return value;
     }
     buildErrorResponse(error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
@@ -64993,6 +64986,7 @@ class GitHubActionsRunner {
             // by getWorkflowRun belongs to the *external* workflow-definition repo,
             // not the target repo.  listWorkflowRuns would 404 in that case.
             const perPage = 10;
+            const maxRuns = 20;
             let page = 1;
             let totalFetched = 0;
             while (true) {
@@ -65017,7 +65011,7 @@ class GitHubActionsRunner {
                 }
                 totalFetched += runs.workflow_runs.length;
                 this.logger.info(`Checked ${totalFetched} run(s) so far (${matchingRuns.length} matched workflow), no match in commit list yet`);
-                if (totalFetched >= runs.total_count) {
+                if (totalFetched >= runs.total_count || totalFetched >= maxRuns) {
                     break;
                 }
                 page++;
@@ -65179,11 +65173,11 @@ async function validateInputs() {
         if (clientCertificatePem) {
             validateClientCertificatePem(clientCertificatePem);
         }
-        // Client secret is read from the AZURE_CLIENT_SECRET environment variable.
+        // Client secret is read from the client-secret action input.
         // Certificate auth takes priority when both are provided.
-        const clientSecret = (process.env['AZURE_CLIENT_SECRET'] || '').trim() || undefined;
+        const clientSecret = (getInput('client-secret', { required: false }) || '').trim() || undefined;
         if (clientCertificatePem && clientSecret) {
-            logger.info('Both client-certificate and AZURE_CLIENT_SECRET are provided; certificate auth takes priority.');
+            logger.info('Both client-certificate and client-secret are provided; certificate auth takes priority.');
         }
         // Get optional inputs
         const filePatterns = getInput('file-patterns') || '**';

@@ -7,6 +7,7 @@ on:
 
 permissions:
   id-token: write
+  # To comment on a commit this needs to be contents: write
   contents: read
   pull-requests: write
   actions: read
@@ -34,6 +35,7 @@ jobs:
 
           # Authentication (omit to use GitHub OIDC federated credentials)
           client-certificate: ${{ secrets.AZURE_CLIENT_CERTIFICATE }}
+          # client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}  # Use instead of client-certificate for secret-based auth
 
           # User mapping
           users-json-path: 'users.json'

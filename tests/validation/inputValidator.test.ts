@@ -42,6 +42,7 @@ describe('inputValidator', () => {
     const defaults: Record<string, string> = {
       'client-id': validGuid,
       'client-certificate': '',
+      'client-secret': '',
       'tenant-id': validTenantId,
       'purview-account-name': 'test-account',
       'purview-endpoint': 'https://graph.microsoft.com/v1.0',
@@ -72,7 +73,6 @@ describe('inputValidator', () => {
     jest.clearAllMocks();
     delete process.env['GITHUB_WORKFLOW_REF'];
     delete process.env['GITHUB_WORKSPACE'];
-    delete process.env['AZURE_CLIENT_SECRET'];
     fs.writeFileSync(usersJsonPath, JSON.stringify(validUsersJson), 'utf-8');
     setupInputMocks();
   });
@@ -178,13 +178,13 @@ describe('inputValidator', () => {
     await expect(validateInputs()).rejects.toThrow(/state-repo-branch.*state-repo-token/);
   });
 
-  it('reads AZURE_CLIENT_SECRET from environment variable', async () => {
-    process.env['AZURE_CLIENT_SECRET'] = 'my-super-secret';
+  it('reads client-secret from action input', async () => {
+    setupInputMocks({ 'client-secret': 'my-super-secret' });
     const config = await validateInputs();
     expect(config.clientSecret).toBe('my-super-secret');
   });
 
-  it('sets clientSecret to undefined when AZURE_CLIENT_SECRET is not set', async () => {
+  it('sets clientSecret to undefined when client-secret is not set', async () => {
     const config = await validateInputs();
     expect(config.clientSecret).toBeUndefined();
   });
@@ -198,8 +198,7 @@ describe('inputValidator', () => {
       'MIIBvAIBADANBgk...',
       '-----END PRIVATE KEY-----',
     ].join('\n');
-    setupInputMocks({ 'client-certificate': validPem });
-    process.env['AZURE_CLIENT_SECRET'] = 'my-secret';
+    setupInputMocks({ 'client-certificate': validPem, 'client-secret': 'my-secret' });
     const config = await validateInputs();
     expect(config.clientCertificatePem).toBe(validPem);
     expect(config.clientSecret).toBe('my-secret');
