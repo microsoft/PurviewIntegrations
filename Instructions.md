@@ -8,6 +8,7 @@ This guide walks you through everything needed to connect your GitHub organizati
 
 - [Setup Purview \& GitHub](#setup-purview--github)
   - [Table of Contents](#table-of-contents)
+  - [Architecture Overview](#architecture-overview)
   - [1. Prerequisites](#1-prerequisites)
   - [2. Create an Entra App Registration \& Add Permissions](#2-create-an-entra-app-registration--add-permissions)
     - [Add API Permissions](#add-api-permissions)
@@ -30,6 +31,44 @@ This guide walks you through everything needed to connect your GitHub organizati
   - [Appendix: OIDC Federated Credential Authentication](#appendix-oidc-federated-credential-authentication)
     - [Configure Federated Credentials](#configure-federated-credentials)
     - [OIDC Workflow](#oidc-workflow)
+
+---
+
+## Architecture Overview
+
+At a high level, this guide wires three systems together — **GitHub**, **Microsoft Entra ID**, and **Microsoft Purview** — so that file changes in your repos are automatically scanned for compliance. The diagram below shows what you're setting up and how the pieces interact at runtime.
+
+```mermaid
+flowchart LR
+    Dev[Developer] -->|push / pull request| Repo[Target Repository]
+
+    subgraph GH[GitHub Organization]
+      Repo
+      Ruleset[(Org Ruleset<br/>requires Purview workflow)]
+      WFRepo[Workflow Repo<br/>purview-workflow]
+      Action[Purview GitHub Action]
+      Secrets[(Org Secrets:<br/>AZURE_CLIENT_ID,<br/>TENANT_ID, CERT/SECRET)]
+    end
+
+    Ruleset -.enforces.-> Repo
+    Repo -->|triggers required workflow| WFRepo
+    WFRepo -->|runs| Action
+    Secrets -.provides credentials.-> Action
+
+    Action -->|authenticate<br/>cert / secret / OIDC| Entra[Microsoft Entra ID<br/>App Registration]
+    Entra -->|access token| Action
+
+    Action -->|scan files &<br/>send activity| Purview[Microsoft Purview]
+```
+
+**What you're configuring in this guide:**
+
+1. An **Entra App Registration** with Microsoft Graph permissions — gives the action an identity to call Purview.
+2. A **Workflow Repository** that hosts the reusable scan workflow — referenced by every repo that needs scanning.
+3. **GitHub Secrets** (org-level) holding the Entra credentials and an optional state-repo token.
+4. An **Organization Ruleset** that makes the Purview scan a required check on protected branches.
+
+At runtime, a push or PR triggers the workflow, the action authenticates to Entra, scans the changed files, and posts the results to Purview.
 
 ---
 
