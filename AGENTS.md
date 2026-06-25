@@ -38,6 +38,12 @@ npm run test       # jest (ts-jest), runs all tests under tests/**
 npm run lint       # eslint over src/**/*.ts
 ```
 
+For a single-command run of the whole loop, use the verify script:
+
+```powershell
+pwsh scripts/verify.ps1   # install deps, build, package, test (+ best-effort lint)
+```
+
 A [`.husky/pre-commit`](.husky/pre-commit) hook runs `npm test`, rebuilds, and re-stages the
 bundled `dist/` files on every commit. CI runs `npm ci && npm test` on push to `main` and on
 every pull request (see [`.github/workflows/tests.yml`](.github/workflows/tests.yml)).
@@ -46,11 +52,11 @@ every pull request (see [`.github/workflows/tests.yml`](.github/workflows/tests.
 
 Before opening a PR, an agent should:
 
-1. `npm run build && npm run package` — TypeScript compiles and the action bundles cleanly.
-2. `npm run test` — all jest tests pass (tests live next to nothing; they sit under
-   `tests/**/*.test.ts` mirroring `src/`).
-3. Commit so the `.husky/pre-commit` hook rebuilds and stages `dist/`.
-4. Apply the mandatory telemetry labels and PR-description footer from
+1. Run [`scripts/verify.ps1`](scripts/verify.ps1) — installs dependencies, compiles TypeScript,
+   bundles the action with ncc, and runs the full jest suite (equivalent to
+   `npm run build && npm run package && npm run test`).
+2. Commit so the `.husky/pre-commit` hook rebuilds and stages `dist/`.
+3. Apply the mandatory telemetry labels and PR-description footer from
    [`.github/instructions/telemetry.instructions.md`](.github/instructions/telemetry.instructions.md).
 
 ## PR conventions

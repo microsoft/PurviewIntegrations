@@ -60,6 +60,10 @@ Defined in [`package.json`](../package.json) scripts:
 | `npm run format` | `prettier --write src/**/*.ts` | Format sources |
 | `npm run all` | build + package + test | Full local validation |
 
+For a single command that runs the whole loop (install + build + package + test, plus a
+best-effort lint), use [`scripts/verify.ps1`](../scripts/verify.ps1) — this is the canonical
+verify entry point referenced from [`AGENTS.md`](../AGENTS.md).
+
 A [`.husky/pre-commit`](../.husky/pre-commit) hook runs `npm test`, rebuilds, and re-stages
 the bundled `dist/` files (`dist/index.js`, `dist/sourcemap-register.js`,
 `dist/licenses.txt`) on every commit — so `dist/` stays in sync with source. CI
