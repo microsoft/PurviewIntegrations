@@ -1,0 +1,40 @@
+name: Check dist/
+
+# The action runs the committed bundle (dist/index.js), not the TypeScript source, so dist/
+# must always be in sync with src/. This job rebuilds the bundle and fails if the committed
+# dist/ differs. If it fails, run `npm run build && npm run package` locally and commit dist/.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check-dist:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Rebuild dist/
+        run: |
+          npm run build
+          npm run package
+
+      - name: Compare committed dist/ with rebuild
+        run: |
+          if [ "$(git diff --ignore-space-at-eol --text dist/ | wc -l)" -gt 0 ]; then
+            echo "Detected uncommitted changes after build. Run 'npm run build && npm run package' and commit dist/."
+            git diff --text dist/
+            exit 1
+          fi

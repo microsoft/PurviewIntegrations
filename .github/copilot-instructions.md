@@ -8,10 +8,32 @@ of context, conventions, and the build/test loop.
 
 - This is a **TypeScript GitHub Action** (`src/index.ts` → bundled to `dist/` via `ncc`).
 - Code style, structure, and test patterns: [`docs/conventions.md`](../docs/conventions.md).
+- GitHub Actions conventions (action.yml, inputs/outputs, secrets, workflow security):
+  [`docs/github-actions.md`](../docs/github-actions.md).
+- Test framework and `@actions/*` mocking pattern: [`docs/testing-patterns.md`](../docs/testing-patterns.md).
 - Build/test loop: `npm run build`, `npm run package`, `npm run test`, `npm run lint`
   (documented in the README **Development** section).
 - A `.husky/pre-commit` hook runs tests, rebuilds, and re-stages `dist/` on every commit —
   never hand-edit `dist/`; regenerate it with `npm run build && npm run package`.
+
+## GitHub Actions guardrails
+
+Because the runner executes the committed `dist/index.js` bundle (not the source), these
+rules are mandatory. Full detail in [`docs/github-actions.md`](../docs/github-actions.md):
+
+- **Fail via `core.setFailed(message)`** — never `throw` to the runner and never
+  `process.exit`. Use `core.warning` / `core.error` / `core.info` / `core.debug` instead of
+  `console.log`.
+- **Never log secrets.** Route logging through `src/utils/logger.ts` (it redacts sensitive
+  fields); call `core.setSecret(value)` for any secret derived at runtime.
+- **Read inputs via `@actions/core`** (`getInput` / `getBooleanInput`) and validate them in
+  `src/validation/inputValidator.ts`. Set declared outputs via `core.setOutput`.
+- **Keep `action.yml`, the reader/writer code, and the docs in sync** when adding an input or
+  output. Inputs/outputs use kebab-case.
+- **Keep `dist/` in sync with `src/`** — `npm run build && npm run package`. CI's `check-dist`
+  job fails the PR if they diverge.
+- **In workflows:** pin third-party actions to a full commit SHA (with a `# vX.Y.Z` comment),
+  set least-privilege `permissions`, and use `npm ci`.
 
 ## PR-size guardrails
 

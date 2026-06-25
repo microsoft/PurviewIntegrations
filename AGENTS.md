@@ -21,6 +21,8 @@ Entry point: [`src/index.ts`](src/index.ts). Bundled output: [`dist/`](dist/) (g
 | Product overview, features, usage | [`README.md`](README.md) |
 | End-to-end setup (Entra app, OIDC, secrets, workflow install) | [`Instructions.md`](Instructions.md) |
 | Code style, structure, and test patterns | [`docs/conventions.md`](docs/conventions.md) |
+| GitHub Actions best practices (action.yml, inputs/outputs, secrets, dist sync, workflow security) | [`docs/github-actions.md`](docs/github-actions.md) |
+| Test framework, layout, and `@actions/*` mocking pattern | [`docs/testing-patterns.md`](docs/testing-patterns.md) |
 | PR & ADO work-item telemetry tagging (mandatory) | [`.github/instructions/telemetry.instructions.md`](.github/instructions/telemetry.instructions.md) |
 | Agent guardrails (PR size, etc.) | [`.github/copilot-instructions.md`](.github/copilot-instructions.md) |
 | PR template | [`.github/pull_request_template.md`](.github/pull_request_template.md) |
@@ -46,7 +48,12 @@ pwsh scripts/verify.ps1   # install deps, build, package, test (+ best-effort li
 
 A [`.husky/pre-commit`](.husky/pre-commit) hook runs `npm test`, rebuilds, and re-stages the
 bundled `dist/` files on every commit. CI runs `npm ci && npm test` on push to `main` and on
-every pull request (see [`.github/workflows/tests.yml`](.github/workflows/tests.yml)).
+every pull request (see [`.github/workflows/tests.yml`](.github/workflows/tests.yml)), and a
+separate [`check-dist`](.github/workflows/check-dist.yml) job rebuilds the bundle and fails if
+the committed `dist/` is out of sync with `src/`. This action runs the committed
+`dist/index.js`, not the TypeScript source — see [`docs/github-actions.md`](docs/github-actions.md)
+for the full set of GitHub Actions conventions (action.yml, inputs/outputs, secret handling,
+and workflow security).
 
 ## Verification / Definition of Done
 

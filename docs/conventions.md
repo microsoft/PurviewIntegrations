@@ -44,7 +44,7 @@ into `dist/index.js` and committed.
 - ESM-only `@actions/*` packages are mapped to their lib entry points in `jest.config.js`;
   each test file provides its own mock factory for those modules. Follow the same pattern
   when testing code that imports `@actions/core`, `@actions/github`, `@actions/glob`, or
-  `@actions/exec`.
+  `@actions/exec`. The full pattern is documented in [`docs/testing-patterns.md`](testing-patterns.md).
 - Add or update a sibling `tests/<area>/<name>.test.ts` for any behavior change.
 
 ## Build, package, lint
@@ -60,6 +60,11 @@ Defined in [`package.json`](../package.json) scripts:
 | `npm run format` | `prettier --write src/**/*.ts` | Format sources |
 | `npm run all` | build + package + test | Full local validation |
 
+> **Tooling gap:** the `lint` and `format` scripts reference `eslint`/`prettier`, but those
+> packages are not yet in `devDependencies` and no config files exist, so `npm run lint`
+> currently fails. `scripts/verify.ps1` treats lint as best-effort for this reason. Adding the
+> ESLint/Prettier dev dependencies and configs is a welcome follow-up.
+
 For a single command that runs the whole loop (install + build + package + test, plus a
 best-effort lint), use [`scripts/verify.ps1`](../scripts/verify.ps1) — this is the canonical
 verify entry point referenced from [`AGENTS.md`](../AGENTS.md).
@@ -68,7 +73,17 @@ A [`.husky/pre-commit`](../.husky/pre-commit) hook runs `npm test`, rebuilds, an
 the bundled `dist/` files (`dist/index.js`, `dist/sourcemap-register.js`,
 `dist/licenses.txt`) on every commit — so `dist/` stays in sync with source. CI
 ([`.github/workflows/tests.yml`](../.github/workflows/tests.yml)) runs `npm ci && npm test`
-on push to `main` and on every pull request.
+on push to `main` and on every pull request, and
+[`.github/workflows/check-dist.yml`](../.github/workflows/check-dist.yml) rebuilds the bundle
+and fails if the committed `dist/` is out of sync.
+
+## GitHub Actions conventions
+
+This repo is a GitHub Action, so Actions-specific rules apply on top of the above:
+`action.yml` metadata, reading inputs / setting outputs through `@actions/core`, failing via
+`core.setFailed` (never `throw`/`process.exit`), secret masking, the `dist/` bundle
+invariant, and workflow security (SHA-pinned actions, least-privilege `permissions`). These
+are documented in [`docs/github-actions.md`](github-actions.md).
 
 ## Security & logging conventions
 
@@ -85,5 +100,7 @@ These patterns are already established in the codebase and should be preserved:
 
 - Product overview & usage: [`README.md`](../README.md)
 - End-to-end setup: [`Instructions.md`](../Instructions.md)
+- GitHub Actions conventions: [`docs/github-actions.md`](github-actions.md)
+- Testing patterns (`@actions/*` mocking): [`docs/testing-patterns.md`](testing-patterns.md)
 - PR / work-item tagging: [`.github/instructions/telemetry.instructions.md`](../.github/instructions/telemetry.instructions.md)
 - Agent router: [`AGENTS.md`](../AGENTS.md)
