@@ -17,10 +17,10 @@ import * as path from 'path';
 describe('UserResolver', () => {
   const usersConfig: UsersConfig = {
     users: [
-      { email: 'alice@contoso.com', userId: 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa' },
-      { email: 'bob@contoso.com', userId: 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb' },
+      { email: 'alice@contoso.com', userId: 'user-alice-id' },
+      { email: 'bob@contoso.com', userId: 'user-bob-id' },
     ],
-    defaultUserId: 'dddddddd-0000-4000-8000-dddddddddddd',
+    defaultUserId: 'default-user-id',
   };
 
   describe('constructor', () => {
@@ -30,9 +30,9 @@ describe('UserResolver', () => {
     });
 
     it('creates resolver with empty users array', () => {
-      const config: UsersConfig = { users: [], defaultUserId: 'eeeeeeee-0000-4000-8000-eeeeeeeeeeee' };
+      const config: UsersConfig = { users: [], defaultUserId: 'default-id' };
       const resolver = new UserResolver(config);
-      expect(resolver.resolve('unknown@test.com')).toBe('eeeeeeee-0000-4000-8000-eeeeeeeeeeee');
+      expect(resolver.resolve('unknown@test.com')).toBe('default-id');
     });
   });
 
@@ -44,32 +44,32 @@ describe('UserResolver', () => {
     });
 
     it('resolves known email to mapped userId', () => {
-      expect(resolver.resolve('alice@contoso.com')).toBe('aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa');
+      expect(resolver.resolve('alice@contoso.com')).toBe('user-alice-id');
     });
 
     it('resolves email case-insensitively', () => {
-      expect(resolver.resolve('ALICE@CONTOSO.COM')).toBe('aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa');
-      expect(resolver.resolve('Alice@Contoso.Com')).toBe('aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa');
+      expect(resolver.resolve('ALICE@CONTOSO.COM')).toBe('user-alice-id');
+      expect(resolver.resolve('Alice@Contoso.Com')).toBe('user-alice-id');
     });
 
     it('returns defaultUserId for unknown email', () => {
-      expect(resolver.resolve('unknown@example.com')).toBe('dddddddd-0000-4000-8000-dddddddddddd');
+      expect(resolver.resolve('unknown@example.com')).toBe('default-user-id');
     });
 
     it('returns defaultUserId for null email', () => {
-      expect(resolver.resolve(null)).toBe('dddddddd-0000-4000-8000-dddddddddddd');
+      expect(resolver.resolve(null)).toBe('default-user-id');
     });
 
     it('returns defaultUserId for undefined email', () => {
-      expect(resolver.resolve(undefined)).toBe('dddddddd-0000-4000-8000-dddddddddddd');
+      expect(resolver.resolve(undefined)).toBe('default-user-id');
     });
 
     it('returns defaultUserId for empty string email', () => {
-      expect(resolver.resolve('')).toBe('dddddddd-0000-4000-8000-dddddddddddd');
+      expect(resolver.resolve('')).toBe('default-user-id');
     });
 
     it('resolves second mapping correctly', () => {
-      expect(resolver.resolve('bob@contoso.com')).toBe('bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb');
+      expect(resolver.resolve('bob@contoso.com')).toBe('user-bob-id');
     });
   });
 
@@ -90,14 +90,14 @@ describe('UserResolver', () => {
 
     it('loads valid users.json file', () => {
       const data: UsersConfig = {
-        users: [{ email: 'test@test.com', userId: 'ffffffff-0000-4000-8000-ffffffffffff' }],
-        defaultUserId: 'cccccccc-0000-4000-8000-cccccccccccc',
+        users: [{ email: 'test@test.com', userId: 'test-id' }],
+        defaultUserId: 'default-test-id',
       };
       fs.writeFileSync(tmpFile, JSON.stringify(data), 'utf-8');
 
       const resolver = UserResolver.loadFromFile(tmpFile);
-      expect(resolver.resolve('test@test.com')).toBe('ffffffff-0000-4000-8000-ffffffffffff');
-      expect(resolver.resolve('other@test.com')).toBe('cccccccc-0000-4000-8000-cccccccccccc');
+      expect(resolver.resolve('test@test.com')).toBe('test-id');
+      expect(resolver.resolve('other@test.com')).toBe('default-test-id');
     });
 
     it('throws when file does not exist', () => {

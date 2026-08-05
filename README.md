@@ -84,7 +84,7 @@ The file maps commit author emails to Azure AD user IDs:
 
 For each commit author, the action checks the email against the `users` array. If a match is found that user ID is used; otherwise the `defaultUserId` is used. The chosen value is logged for every commit.
 
-`defaultUserId` and every `userId` may be an Entra object ID (GUID) or a user principal name; mappings with a malformed email or an unusable `userId` are ignored with a warning. A UPN is resolved to its object ID before any protection-scope or `processContent` call, and if it cannot be resolved those calls are skipped and the content is sent through `contentActivities` instead. Commit author emails are attacker-controlled, so malformed addresses are rejected and an email that cannot be resolved to a real directory identity is never presented as a resolved one — that content is attributed to the configured default identity and the fallback is logged.
+Commit author emails come from git metadata and are attacker-controlled, so an address that is not a plausible email is never sent to the directory lookup — it simply falls back to `defaultUserId` like any other unresolved author. Identities are validated at the API boundary too: a `userId` that is a user principal name is resolved to its object ID, and one that cannot be resolved skips the protection-scope and `processContent` calls and is routed through `contentActivities` instead.
 
 ## Inputs
 

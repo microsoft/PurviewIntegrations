@@ -59489,6 +59489,57 @@ function glob_hashFiles(patterns_1) {
     });
 }
 //# sourceMappingURL=glob.js.map
+;// CONCATENATED MODULE: ./dist/utils/identity.js
+/**
+ * Identity input validation helpers.
+ *
+ * Author emails come from git commit metadata, which is entirely
+ * attacker-controlled (`git commit --author=...`). They are used as cache keys
+ * and directory lookup keys, so they are validated before use, and a value that
+ * cannot be validated is never treated as a resolved identity.
+ */
+// Deliberately conservative: single @, no whitespace/quotes/control characters,
+// a dotted domain. Anything exotic is rejected rather than looked up.
+const EMAIL_PATTERN = /^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/;
+const MAX_EMAIL_LENGTH = 254;
+const GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * Lowercase and validate an email address.
+ * Returns undefined when the value is missing or not a plausible address.
+ */
+function normalizeEmail(email) {
+    if (!email)
+        return undefined;
+    const normalized = email.trim().toLowerCase();
+    if (normalized.length === 0 || normalized.length > MAX_EMAIL_LENGTH)
+        return undefined;
+    return EMAIL_PATTERN.test(normalized) ? normalized : undefined;
+}
+/**
+ * True when the value is an Entra object ID (GUID). Used to gate
+ * authorization-sensitive calls so a malformed or unresolved identity never
+ * reaches a protection-scope lookup.
+ */
+function isUserId(userId) {
+    return !!userId && GUID_PATTERN.test(userId.trim());
+}
+/**
+ * Normalize a configured or resolved identity into a value that is safe to use
+ * as a Graph `/users/{id | userPrincipalName}` path segment.
+ *
+ * Returns the GUID for an object ID, the normalized address for a UPN, and
+ * undefined for anything else — so a malformed identity can never be spliced
+ * into a request URL.
+ */
+function normalizeUserIdentity(value) {
+    if (!value)
+        return undefined;
+    const trimmed = value.trim();
+    if (GUID_PATTERN.test(trimmed))
+        return trimmed.toLowerCase();
+    return normalizeEmail(trimmed);
+}
+//# sourceMappingURL=identity.js.map
 ;// CONCATENATED MODULE: external "node:path"
 const external_node_path_namespaceObject = require("node:path");
 ;// CONCATENATED MODULE: ./node_modules/binary-extensions/binary-extensions.json
@@ -62112,57 +62163,6 @@ class RetryHandler {
     }
 }
 //# sourceMappingURL=retryHandler.js.map
-;// CONCATENATED MODULE: ./dist/utils/identity.js
-/**
- * Identity input validation helpers.
- *
- * Author emails come from git commit metadata, which is entirely
- * attacker-controlled (`git commit --author=...`). They are used as cache keys
- * and directory lookup keys, so they are validated before use, and a value that
- * cannot be validated is never treated as a resolved identity.
- */
-// Deliberately conservative: single @, no whitespace/quotes/control characters,
-// a dotted domain. Anything exotic is rejected rather than looked up.
-const EMAIL_PATTERN = /^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/;
-const MAX_EMAIL_LENGTH = 254;
-const GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-/**
- * Lowercase and validate an email address.
- * Returns undefined when the value is missing or not a plausible address.
- */
-function normalizeEmail(email) {
-    if (!email)
-        return undefined;
-    const normalized = email.trim().toLowerCase();
-    if (normalized.length === 0 || normalized.length > MAX_EMAIL_LENGTH)
-        return undefined;
-    return EMAIL_PATTERN.test(normalized) ? normalized : undefined;
-}
-/**
- * True when the value is an Entra object ID (GUID). Used to gate
- * authorization-sensitive calls so a malformed or unresolved identity never
- * reaches a protection-scope lookup.
- */
-function isUserId(userId) {
-    return !!userId && GUID_PATTERN.test(userId.trim());
-}
-/**
- * Normalize a configured or resolved identity into a value that is safe to use
- * as a Graph `/users/{id | userPrincipalName}` path segment.
- *
- * Returns the GUID for an object ID, the normalized address for a UPN, and
- * undefined for anything else — so a malformed identity can never be spliced
- * into a request URL.
- */
-function normalizeUserIdentity(value) {
-    if (!value)
-        return undefined;
-    const trimmed = value.trim();
-    if (GUID_PATTERN.test(trimmed))
-        return trimmed.toLowerCase();
-    return normalizeEmail(trimmed);
-}
-//# sourceMappingURL=identity.js.map
 ;// CONCATENATED MODULE: ./dist/api/purviewClient.js
 
 
@@ -62491,7 +62491,6 @@ class PurviewClient {
 
 
 
-
 /**
  * Resolves Azure AD user IDs from a local users.json mapping file.
  *
@@ -62513,26 +62512,9 @@ class UserResolver {
         this.emailToUserId = new Map();
         this.defaultUserId = usersConfig.defaultUserId;
         for (const mapping of usersConfig.users) {
-            const email = normalizeEmail(mapping.email);
-            const userId = normalizeUserIdentity(mapping.userId);
-            if (!email || !userId) {
-                this.logger.warn(`Ignoring invalid users.json mapping for email '${mapping.email}' — email must be a valid address and userId a GUID or user principal name.`);
-                continue;
-            }
-            this.emailToUserId.set(email, userId);
+            this.emailToUserId.set(mapping.email.toLowerCase(), mapping.userId);
         }
         this.logger.info(`UserResolver initialised with ${this.emailToUserId.size} mapping(s) and default userId: ${this.defaultUserId}`);
-    }
-    /**
-     * Resolve an email address to an Azure AD user ID using only explicit
-     * mappings. Returns undefined when there is no mapping, so callers can tell a
-     * genuine resolution apart from a fallback.
-     */
-    tryResolve(email) {
-        const normalized = normalizeEmail(email);
-        if (!normalized)
-            return undefined;
-        return this.emailToUserId.get(normalized);
     }
     /**
      * Resolve an email address to an Azure AD user ID.
@@ -62540,10 +62522,12 @@ class UserResolver {
      * Logs which value was chosen.
      */
     resolve(email) {
-        const userId = this.tryResolve(email);
-        if (userId) {
-            this.logger.debug(`Resolved userId for email '${email}': ${userId} (from users.json mapping)`);
-            return userId;
+        if (email) {
+            const userId = this.emailToUserId.get(email.toLowerCase());
+            if (userId) {
+                this.logger.debug(`Resolved userId for email '${email}': ${userId} (from users.json mapping)`);
+                return userId;
+            }
         }
         this.logger.debug(`No users.json mapping found for email '${email ?? 'unknown'}', using default userId: ${this.defaultUserId}`);
         return this.defaultUserId;
@@ -62595,8 +62579,6 @@ class FileProcessor {
     emptySha = "0000000000000000000000000000000000000000";
     /** Cache: email (lowercase) → Graph API user ID. Survives across calls. */
     graphUserIdCache = new Map();
-    /** Cache value meaning "Graph confirmed this email has no directory identity". */
-    static notFoundMarker = '\u0000not-found';
     constructor(config) {
         this.config = config;
         this.logger = new logger_Logger('FileProcessor');
@@ -62610,98 +62592,82 @@ class FileProcessor {
      * Resolution order: users.json mappings → cached Graph results → Graph API.
      * Results from Graph API are cached for the lifetime of this FileProcessor.
      *
-     * Only genuine resolutions are returned. An email that is malformed, unmapped
-     * or unknown to Graph is left out of the map entirely so callers can tell a
-     * real identity apart from the configured default one, and so an
-     * attacker-chosen commit email can never masquerade as a resolved directory
-     * identity.
-     *
      * Returns a map of lowercase email → userId.
      */
     async resolveUserIds(emails) {
         const resolved = {};
-        // 0. Reject malformed addresses before they become cache or lookup keys
-        const validEmails = [];
-        for (const email of emails) {
-            const normalized = normalizeEmail(email);
-            if (!normalized) {
-                this.logger.warn(`Ignoring malformed author email: '${email}'`);
-                continue;
-            }
-            validEmails.push(normalized);
-        }
         // 1. Resolve from users.json mappings
         if (this.config.userMappings && this.config.userMappings.length > 0) {
             const userResolver = new UserResolver({ users: this.config.userMappings, defaultUserId: this.config.userId }, this.logger);
-            for (const email of validEmails) {
-                const id = userResolver.tryResolve(email);
-                if (id) {
-                    resolved[email] = id;
-                }
+            for (const email of emails) {
+                const id = userResolver.resolve(email);
+                resolved[email] = id;
             }
         }
-        // 2. Fill from cache for emails still unresolved
+        // 2. Fill from cache for emails still unresolved (or resolved to default)
         const needsGraph = [];
-        for (const email of validEmails) {
-            if (resolved[email]) {
+        for (const email of emails) {
+            if (resolved[email] && resolved[email] !== this.config.userId) {
                 continue; // already resolved via users.json
             }
             const cached = this.graphUserIdCache.get(email);
-            if (cached === undefined) {
-                needsGraph.push(email);
-            }
-            else if (cached === FileProcessor.notFoundMarker) {
-                this.logger.debug(`Graph cache hit for '${email}': known not found`);
-            }
-            else {
+            if (cached) {
                 resolved[email] = cached;
                 this.logger.debug(`Graph cache hit for '${email}': ${cached}`);
+            }
+            else {
+                needsGraph.push(email);
             }
         }
         // 3. Call Graph API for the rest
         if (needsGraph.length > 0) {
+            // Author emails come from commit metadata and are attacker-controlled.
+            // Only plausible addresses are sent to Graph; the rest keep the default
+            // identity assigned in step 4, exactly as an unresolved address does.
+            const lookupEmails = needsGraph.filter(email => {
+                if (normalizeEmail(email))
+                    return true;
+                this.logger.warn(`Not looking up malformed author email: '${email}'`);
+                return false;
+            });
             try {
                 const token = await this.authService.getToken();
                 this.purviewClient.setAuthToken(token.accessToken);
-                const response = await this.purviewClient.getUserInfo(needsGraph);
+                const response = await this.purviewClient.getUserInfo(lookupEmails);
                 if (response.success && response.data) {
                     for (const user of response.data.value) {
-                        const upn = normalizeEmail(user.userPrincipalName);
-                        if (!upn || !isUserId(user.id)) {
-                            this.logger.warn('Ignoring Graph result with an unusable userPrincipalName/id.');
-                            continue;
-                        }
+                        const upn = user.userPrincipalName.toLowerCase();
                         this.graphUserIdCache.set(upn, user.id);
                         resolved[upn] = user.id;
                         this.logger.debug(`Graph API resolved '${upn}': ${user.id}`);
                     }
-                    // Cache a "not found" marker for emails that were queried but absent
-                    // from the response so we don't call Graph API again for them. The
-                    // marker is never treated as an identity.
-                    for (const email of needsGraph) {
-                        if (!this.graphUserIdCache.has(email)) {
-                            this.graphUserIdCache.set(email, FileProcessor.notFoundMarker);
-                            this.logger.debug(`Graph API: user '${email}' not found`);
-                        }
-                    }
                 }
-                else {
-                    // Transient/service error — do not cache, so a single failure does not
-                    // pin the rest of the run to the default identity.
-                    this.logger.warn(`Graph API user lookup returned an error; identities left unresolved. ${response.error ?? ''}`.trim());
+                // Cache "not found" for emails that were queried but not in the response
+                // so we don't call Graph API again for these users
+                for (const email of needsGraph) {
+                    if (!this.graphUserIdCache.has(email.toLowerCase())) {
+                        this.graphUserIdCache.set(email.toLowerCase(), this.config.userId);
+                        this.logger.debug(`Graph API: user '${email}' not found, caching as default userId`);
+                    }
                 }
             }
             catch (e) {
-                this.logger.warn('Graph API user lookup failed; identities left unresolved.', { error: e });
+                this.logger.warn('Graph API user lookup failed; caching as default userId to avoid re-querying.', { error: e });
+                // Cache all failed lookups so we don't retry Graph API for these emails
+                for (const email of needsGraph) {
+                    if (!this.graphUserIdCache.has(email.toLowerCase())) {
+                        this.graphUserIdCache.set(email.toLowerCase(), this.config.userId);
+                    }
+                }
             }
         }
-        const unresolved = validEmails.filter(email => !resolved[email]);
-        if (unresolved.length > 0) {
-            this.logger.warn(`${unresolved.length} author email(s) could not be resolved to a directory identity ` +
-                `(${unresolved.join(', ')}). Their content is attributed to the configured default identity, ` +
-                `never to another user's identity.`);
+        // 4. Ensure every email has at least the default
+        for (const email of emails) {
+            if (!resolved[email]) {
+                resolved[email] = this.config.userId;
+            }
         }
-        this.logger.info(`Resolved ${Object.keys(resolved).length} of ${validEmails.length} valid email(s); ${needsGraph.length} queried via Graph API.`);
+        this.logger.info(`Resolved ${emails.size} email(s): ${needsGraph.length} via Graph API, ${emails.size - needsGraph.length} from cache/users.json.`);
         return resolved;
     }
     getGlobPatterns() {
@@ -62965,13 +62931,7 @@ class FileProcessor {
                 // git log -1 gives the most recent commit that touched the file
                 const email = (0,external_child_process_namespaceObject.execFileSync)('git', ['log', '-1', '--format=%ae', '--', file.path], { cwd: workspace, encoding: 'utf-8', timeout: 10000 }).trim();
                 if (email) {
-                    const normalized = normalizeEmail(email);
-                    if (normalized) {
-                        map[file.path] = normalized;
-                    }
-                    else {
-                        this.logger.warn(`Ignoring malformed commit author email for ${file.path}: '${email}'`);
-                    }
+                    map[file.path] = email.toLowerCase();
                 }
             }
             catch {
@@ -65330,7 +65290,6 @@ class GitHubActionsRunner {
 
 
 
-
 async function validateInputs() {
     const logger = new logger_Logger('InputValidator');
     try {
@@ -65422,15 +65381,11 @@ async function validateInputs() {
         if (!parsed.defaultUserId) {
             throw new Error('users.json must contain a "defaultUserId" field.');
         }
-        const defaultIdentity = normalizeUserIdentity(parsed.defaultUserId);
-        if (!defaultIdentity) {
-            throw new Error('Invalid "defaultUserId" in users.json. Expected an Entra object ID (GUID) or a user principal name.');
-        }
         if (!Array.isArray(parsed.users)) {
             throw new Error('users.json must contain a "users" array.');
         }
         userMappings = parsed.users;
-        userId = defaultIdentity;
+        userId = parsed.defaultUserId;
         logger.info(`Loaded ${userMappings.length} user mapping(s)`);
         logger.info(`Default userId from users.json: ${userId}`);
         // Validate format

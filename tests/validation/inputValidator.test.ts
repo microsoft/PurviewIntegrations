@@ -35,7 +35,7 @@ describe('inputValidator', () => {
 
   const validUsersJson = {
     users: [{ email: 'test@test.com', userId: 'user-id-1' }],
-    defaultUserId: 'dddddddd-0000-4000-8000-dddddddddddd',
+    defaultUserId: 'default-user-123',
   };
 
   function setupInputMocks(overrides: Record<string, string> = {}) {
@@ -87,7 +87,7 @@ describe('inputValidator', () => {
     expect(config.clientId).toBe(validGuid);
     expect(config.tenantId).toBe(validTenantId);
     expect(config.purviewEndpoint).toBe('https://graph.microsoft.com/v1.0');
-    expect(config.userId).toBe('dddddddd-0000-4000-8000-dddddddddddd');
+    expect(config.userId).toBe('default-user-123');
     expect(config.userMappings).toHaveLength(1);
     expect(config.repository.owner).toBe('test-owner');
     expect(config.repository.repo).toBe('test-repo');
@@ -141,7 +141,7 @@ describe('inputValidator', () => {
   });
 
   it('throws when users.json lacks users array', async () => {
-    fs.writeFileSync(usersJsonPath, JSON.stringify({ defaultUserId: 'dddddddd-0000-4000-8000-dddddddddddd' }), 'utf-8');
+    fs.writeFileSync(usersJsonPath, JSON.stringify({ defaultUserId: 'abc' }), 'utf-8');
     await expect(validateInputs()).rejects.toThrow(/users.*array/);
   });
 
@@ -259,7 +259,7 @@ describe('inputValidator', () => {
       setupCrossRepoMocks();
 
       const config = await validateInputs();
-      expect(config.userId).toBe('dddddddd-0000-4000-8000-dddddddddddd');
+      expect(config.userId).toBe('default-user-123');
       expect(mockGetContent).toHaveBeenCalledWith(
         expect.objectContaining({
           owner: 'external-owner',

@@ -2,7 +2,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { UsersConfig } from '../config/types';
 import { Logger } from './logger';
-import { normalizeEmail, normalizeUserIdentity } from './identity';
 
 /**
  * Resolves Azure AD user IDs from a local users.json mapping file.
@@ -27,27 +26,10 @@ export class UserResolver {
     this.defaultUserId = usersConfig.defaultUserId;
 
     for (const mapping of usersConfig.users) {
-      const email = normalizeEmail(mapping.email);
-      const userId = normalizeUserIdentity(mapping.userId);
-      if (!email || !userId) {
-        this.logger.warn(`Ignoring invalid users.json mapping for email '${mapping.email}' — email must be a valid address and userId a GUID or user principal name.`);
-        continue;
-      }
-      this.emailToUserId.set(email, userId);
+      this.emailToUserId.set(mapping.email.toLowerCase(), mapping.userId);
     }
 
     this.logger.info(`UserResolver initialised with ${this.emailToUserId.size} mapping(s) and default userId: ${this.defaultUserId}`);
-  }
-
-  /**
-   * Resolve an email address to an Azure AD user ID using only explicit
-   * mappings. Returns undefined when there is no mapping, so callers can tell a
-   * genuine resolution apart from a fallback.
-   */
-  tryResolve(email: string | null | undefined): string | undefined {
-    const normalized = normalizeEmail(email);
-    if (!normalized) return undefined;
-    return this.emailToUserId.get(normalized);
   }
 
   /**
@@ -56,10 +38,12 @@ export class UserResolver {
    * Logs which value was chosen.
    */
   resolve(email: string | null | undefined): string {
-    const userId = this.tryResolve(email);
-    if (userId) {
-      this.logger.debug(`Resolved userId for email '${email}': ${userId} (from users.json mapping)`);
-      return userId;
+    if (email) {
+      const userId = this.emailToUserId.get(email.toLowerCase());
+      if (userId) {
+        this.logger.debug(`Resolved userId for email '${email}': ${userId} (from users.json mapping)`);
+        return userId;
+      }
     }
 
     this.logger.debug(`No users.json mapping found for email '${email ?? 'unknown'}', using default userId: ${this.defaultUserId}`);

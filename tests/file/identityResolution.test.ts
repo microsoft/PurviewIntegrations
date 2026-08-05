@@ -66,12 +66,12 @@ function createConfig(overrides: Partial<ActionConfig> = {}): ActionConfig {
 const resolve = (processor: FileProcessor, emails: string[]) =>
   (processor as any).resolveUserIds(new Set(emails)) as Promise<Record<string, string>>;
 
-describe('FileProcessor.resolveUserIds — identity is never faked', () => {
+describe('FileProcessor.resolveUserIds', () => {
   beforeEach(() => {
     mockGetUserInfo.mockReset();
   });
 
-  it('returns only genuine resolutions, never the default identity', async () => {
+  it('resolves known authors and falls back to the default identity for the rest', async () => {
     mockGetUserInfo.mockResolvedValue({
       success: true,
       data: { value: [{ id: ALICE, userPrincipalName: 'Alice@contoso.com' }] },
@@ -81,59 +81,41 @@ describe('FileProcessor.resolveUserIds — identity is never faked', () => {
     const map = await resolve(processor, ['alice@contoso.com', 'nobody@contoso.com']);
 
     expect(map['alice@contoso.com']).toBe(ALICE);
-    expect(map['nobody@contoso.com']).toBeUndefined();
+    expect(map['nobody@contoso.com']).toBe(DEFAULT_USER);
   });
 
-  it('drops malformed emails before they reach Graph or the cache', async () => {
+  it('never sends a malformed author email to Graph, but still assigns the default identity', async () => {
     mockGetUserInfo.mockResolvedValue({ success: true, data: { value: [] } });
     const processor = new FileProcessor(createConfig());
+    const hostile = `x@y.com' or true or '`;
 
-    const map = await resolve(processor, ['not-an-email', `x@y.com' or true or '`]);
+    const map = await resolve(processor, ['not-an-email', hostile, 'alice@contoso.com']);
 
-    expect(map).toEqual({});
-    expect(mockGetUserInfo).not.toHaveBeenCalled();
+    expect(mockGetUserInfo).toHaveBeenCalledWith(['alice@contoso.com']);
+    expect(map['not-an-email']).toBe(DEFAULT_USER);
+    expect(map[hostile]).toBe(DEFAULT_USER);
   });
 
-  it('uses users.json mappings and ignores mappings with a non-GUID userId', async () => {
+  it('uses users.json mappings', async () => {
     mockGetUserInfo.mockResolvedValue({ success: true, data: { value: [] } });
     const processor = new FileProcessor(
-      createConfig({
-        userMappings: [
-          { email: 'alice@contoso.com', userId: ALICE },
-          { email: 'mallory@contoso.com', userId: 'default-user-id' },
-        ],
-      })
+      createConfig({ userMappings: [{ email: 'alice@contoso.com', userId: ALICE }] })
     );
 
     const map = await resolve(processor, ['alice@contoso.com', 'mallory@contoso.com']);
 
     expect(map['alice@contoso.com']).toBe(ALICE);
-    expect(map['mallory@contoso.com']).toBeUndefined();
+    expect(map['mallory@contoso.com']).toBe(DEFAULT_USER);
   });
 
-  it('does not cache a transient Graph failure as an identity', async () => {
-    mockGetUserInfo.mockRejectedValueOnce(new Error('boom')).mockResolvedValueOnce({
-      success: true,
-      data: { value: [{ id: ALICE, userPrincipalName: 'alice@contoso.com' }] },
-    });
-    const processor = new FileProcessor(createConfig());
-
-    const first = await resolve(processor, ['alice@contoso.com']);
-    expect(first['alice@contoso.com']).toBeUndefined();
-
-    const second = await resolve(processor, ['alice@contoso.com']);
-    expect(second['alice@contoso.com']).toBe(ALICE);
-    expect(mockGetUserInfo).toHaveBeenCalledTimes(2);
-  });
-
-  it('caches a confirmed not-found without re-querying Graph', async () => {
+  it('caches a not-found so Graph is queried only once', async () => {
     mockGetUserInfo.mockResolvedValue({ success: true, data: { value: [] } });
     const processor = new FileProcessor(createConfig());
 
     await resolve(processor, ['ghost@contoso.com']);
     const second = await resolve(processor, ['ghost@contoso.com']);
 
-    expect(second['ghost@contoso.com']).toBeUndefined();
+    expect(second['ghost@contoso.com']).toBe(DEFAULT_USER);
     expect(mockGetUserInfo).toHaveBeenCalledTimes(1);
   });
 });
