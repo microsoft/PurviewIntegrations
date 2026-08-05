@@ -84,7 +84,7 @@ The file maps commit author emails to Azure AD user IDs:
 
 For each commit author, the action checks the email against the `users` array. If a match is found that user ID is used; otherwise the `defaultUserId` is used. The chosen value is logged for every commit.
 
-Commit author emails come from git metadata and are attacker-controlled, so an address that is not a plausible email is never sent to the directory lookup — it simply falls back to `defaultUserId` like any other unresolved author. Identities are validated at the API boundary too: a `userId` that is a user principal name is resolved to its object ID, and one that cannot be resolved skips the protection-scope and `processContent` calls and is routed through `contentActivities` instead.
+Commit author emails come from git metadata and can be set to anything locally, so an address that is not a plausible email is never sent to the directory lookup — it simply falls back to `defaultUserId` like any other unresolved author. Identities are also checked at the API boundary: a `userId` given as a user principal name is resolved to its object ID, and one that cannot be resolved skips the protection-scope and `processContent` calls and is routed through `contentActivities` instead.
 
 ## Inputs
 
