@@ -3,7 +3,7 @@ import type { Endpoints } from '@octokit/types';
 import * as glob from '@actions/glob';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import isBinaryPath from 'is-binary-path';
 import { minimatch } from 'minimatch';
 import { ActionConfig, FileMetadata, PrInfo, CommitInfo, CommitFiles } from '../config/types';
@@ -265,14 +265,15 @@ export class FileProcessor {
     // The ref may not be available in a shallow clone (e.g. PR base SHA).
     // Fetch it so git ls-tree can resolve it.
     try {
-      execSync(`git fetch --depth=1 origin ${ref}`, { cwd: workspace, encoding: 'utf-8', timeout: 30000 });
+      execFileSync('git', ['fetch', '--depth=1', 'origin', ref], { cwd: workspace, encoding: 'utf-8', timeout: 30000 });
     } catch {
       // Already available locally — continue
     }
 
     try {
-      treeOutput = execSync(
-        `git ls-tree -r --long "${ref}"`,
+      treeOutput = execFileSync(
+        'git',
+        ['ls-tree', '-r', '--long', ref],
         { cwd: workspace, encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 }
       ).trim();
     } catch (e) {
@@ -310,8 +311,9 @@ export class FileProcessor {
       }
 
       try {
-        const content = execSync(
-          `git cat-file -p ${blobSha}`,
+        const content = execFileSync(
+          'git',
+          ['cat-file', '-p', blobSha],
           { cwd: workspace, encoding: 'utf-8', maxBuffer: maxBytes }
         );
 
@@ -426,8 +428,9 @@ export class FileProcessor {
     for (const file of files) {
       try {
         // git log -1 gives the most recent commit that touched the file
-        const email = execSync(
-          `git log -1 --format=%ae -- "${file.path}"`,
+        const email = execFileSync(
+          'git',
+          ['log', '-1', '--format=%ae', '--', file.path],
           { cwd: workspace, encoding: 'utf-8', timeout: 10000 }
         ).trim();
 

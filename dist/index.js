@@ -1072,7 +1072,7 @@ function expand(str, isTop) {
     var y = numeric(n[1]);
     var width = Math.max(n[0].length, n[1].length)
     var incr = n.length == 3
-      ? Math.max(Math.abs(numeric(n[2])), 1)
+      ? Math.abs(numeric(n[2]))
       : 1;
     var test = lte;
     var reverse = y < x;
@@ -1119,6 +1119,7 @@ function expand(str, isTop) {
 
   return expansions;
 }
+
 
 
 /***/ }),
@@ -59677,9 +59678,7 @@ function expand_(str, max, isTop) {
             const x = numeric(n[0]);
             const y = numeric(n[1]);
             const width = Math.max(n[0].length, n[1].length);
-            let incr = n.length === 3 && n[2] !== undefined ?
-                Math.max(Math.abs(numeric(n[2])), 1)
-                : 1;
+            let incr = n.length === 3 && n[2] !== undefined ? Math.abs(numeric(n[2])) : 1;
             let test = lte;
             const reverse = y < x;
             if (reverse) {
@@ -62562,13 +62561,13 @@ class FileProcessor {
         // The ref may not be available in a shallow clone (e.g. PR base SHA).
         // Fetch it so git ls-tree can resolve it.
         try {
-            (0,external_child_process_namespaceObject.execSync)(`git fetch --depth=1 origin ${ref}`, { cwd: workspace, encoding: 'utf-8', timeout: 30000 });
+            (0,external_child_process_namespaceObject.execFileSync)('git', ['fetch', '--depth=1', 'origin', ref], { cwd: workspace, encoding: 'utf-8', timeout: 30000 });
         }
         catch {
             // Already available locally — continue
         }
         try {
-            treeOutput = (0,external_child_process_namespaceObject.execSync)(`git ls-tree -r --long "${ref}"`, { cwd: workspace, encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 }).trim();
+            treeOutput = (0,external_child_process_namespaceObject.execFileSync)('git', ['ls-tree', '-r', '--long', ref], { cwd: workspace, encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 }).trim();
         }
         catch (e) {
             this.logger.warn(`Failed to list files at ref ${ref}`, { error: e });
@@ -62600,7 +62599,7 @@ class FileProcessor {
                 continue;
             }
             try {
-                const content = (0,external_child_process_namespaceObject.execSync)(`git cat-file -p ${blobSha}`, { cwd: workspace, encoding: 'utf-8', maxBuffer: maxBytes });
+                const content = (0,external_child_process_namespaceObject.execFileSync)('git', ['cat-file', '-p', blobSha], { cwd: workspace, encoding: 'utf-8', maxBuffer: maxBytes });
                 result.push({
                     path: filePath,
                     size,
@@ -62701,7 +62700,7 @@ class FileProcessor {
         for (const file of files) {
             try {
                 // git log -1 gives the most recent commit that touched the file
-                const email = (0,external_child_process_namespaceObject.execSync)(`git log -1 --format=%ae -- "${file.path}"`, { cwd: workspace, encoding: 'utf-8', timeout: 10000 }).trim();
+                const email = (0,external_child_process_namespaceObject.execFileSync)('git', ['log', '-1', '--format=%ae', '--', file.path], { cwd: workspace, encoding: 'utf-8', timeout: 10000 }).trim();
                 if (email) {
                     map[file.path] = email.toLowerCase();
                 }
