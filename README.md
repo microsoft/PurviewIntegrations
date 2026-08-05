@@ -84,6 +84,8 @@ The file maps commit author emails to Azure AD user IDs:
 
 For each commit author, the action checks the email against the `users` array. If a match is found that user ID is used; otherwise the `defaultUserId` is used. The chosen value is logged for every commit.
 
+`defaultUserId` and every `userId` must be an Entra object ID (GUID); mappings with a malformed email or a non-GUID `userId` are ignored with a warning. Commit author emails are attacker-controlled, so malformed addresses are rejected and an email that cannot be resolved to a real directory identity is never presented as a resolved one — that content is attributed to the configured default identity and the fallback is logged.
+
 ## Inputs
 
 | Input | Description | Required | Default |

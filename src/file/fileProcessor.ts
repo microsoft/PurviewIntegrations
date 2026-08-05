@@ -17,6 +17,7 @@ import { Logger } from '../utils/logger';
 import { PurviewClient } from '../api/purviewClient';
 import { AuthenticationService } from '../auth/authenticationService';
 import { UserResolver } from '../utils/userResolver';
+import { normalizeEmail, isUserId } from '../utils/identity';
 
 export class FileProcessor {
   private readonly logger: Logger;
@@ -26,6 +27,8 @@ export class FileProcessor {
   private emptySha: string  = "0000000000000000000000000000000000000000";
   /** Cache: email (lowercase) → Graph API user ID. Survives across calls. */
   private readonly graphUserIdCache: Map<string, string> = new Map();
+  /** Cache value meaning "Graph confirmed this email has no directory identity". */
+  private static readonly notFoundMarker = '\u0000not-found';
   
   constructor(private readonly config: ActionConfig) {
     this.logger = new Logger('FileProcessor');
@@ -40,10 +43,27 @@ export class FileProcessor {
    * Resolution order: users.json mappings → cached Graph results → Graph API.
    * Results from Graph API are cached for the lifetime of this FileProcessor.
    *
+   * Only genuine resolutions are returned. An email that is malformed, unmapped
+   * or unknown to Graph is left out of the map entirely so callers can tell a
+   * real identity apart from the configured default one, and so an
+   * attacker-chosen commit email can never masquerade as a resolved directory
+   * identity.
+   *
    * Returns a map of lowercase email → userId.
    */
   private async resolveUserIds(emails: Set<string>): Promise<Record<string, string>> {
     const resolved: Record<string, string> = {};
+
+    // 0. Reject malformed addresses before they become cache or lookup keys
+    const validEmails: string[] = [];
+    for (const email of emails) {
+      const normalized = normalizeEmail(email);
+      if (!normalized) {
+        this.logger.warn(`Ignoring malformed author email: '${email}'`);
+        continue;
+      }
+      validEmails.push(normalized);
+    }
 
     // 1. Resolve from users.json mappings
     if (this.config.userMappings && this.config.userMappings.length > 0) {
@@ -51,24 +71,28 @@ export class FileProcessor {
         { users: this.config.userMappings, defaultUserId: this.config.userId },
         this.logger
       );
-      for (const email of emails) {
-        const id = userResolver.resolve(email);
-        resolved[email] = id;
+      for (const email of validEmails) {
+        const id = userResolver.tryResolve(email);
+        if (id) {
+          resolved[email] = id;
+        }
       }
     }
 
-    // 2. Fill from cache for emails still unresolved (or resolved to default)
+    // 2. Fill from cache for emails still unresolved
     const needsGraph: string[] = [];
-    for (const email of emails) {
-      if (resolved[email] && resolved[email] !== this.config.userId) {
+    for (const email of validEmails) {
+      if (resolved[email]) {
         continue; // already resolved via users.json
       }
       const cached = this.graphUserIdCache.get(email);
-      if (cached) {
+      if (cached === undefined) {
+        needsGraph.push(email);
+      } else if (cached === FileProcessor.notFoundMarker) {
+        this.logger.debug(`Graph cache hit for '${email}': known not found`);
+      } else {
         resolved[email] = cached;
         this.logger.debug(`Graph cache hit for '${email}': ${cached}`);
-      } else {
-        needsGraph.push(email);
       }
     }
 
@@ -81,40 +105,45 @@ export class FileProcessor {
 
         if (response.success && response.data) {
           for (const user of response.data.value) {
-            const upn = user.userPrincipalName.toLowerCase();
+            const upn = normalizeEmail(user.userPrincipalName);
+            if (!upn || !isUserId(user.id)) {
+              this.logger.warn('Ignoring Graph result with an unusable userPrincipalName/id.');
+              continue;
+            }
             this.graphUserIdCache.set(upn, user.id);
             resolved[upn] = user.id;
             this.logger.debug(`Graph API resolved '${upn}': ${user.id}`);
           }
-        }
 
-        // Cache "not found" for emails that were queried but not in the response
-        // so we don't call Graph API again for these users
-        for (const email of needsGraph) {
-          if (!this.graphUserIdCache.has(email.toLowerCase())) {
-            this.graphUserIdCache.set(email.toLowerCase(), this.config.userId);
-            this.logger.debug(`Graph API: user '${email}' not found, caching as default userId`);
+          // Cache a "not found" marker for emails that were queried but absent
+          // from the response so we don't call Graph API again for them. The
+          // marker is never treated as an identity.
+          for (const email of needsGraph) {
+            if (!this.graphUserIdCache.has(email)) {
+              this.graphUserIdCache.set(email, FileProcessor.notFoundMarker);
+              this.logger.debug(`Graph API: user '${email}' not found`);
+            }
           }
+        } else {
+          // Transient/service error — do not cache, so a single failure does not
+          // pin the rest of the run to the default identity.
+          this.logger.warn(`Graph API user lookup returned an error; identities left unresolved. ${response.error ?? ''}`.trim());
         }
       } catch (e) {
-        this.logger.warn('Graph API user lookup failed; caching as default userId to avoid re-querying.', { error: e });
-        // Cache all failed lookups so we don't retry Graph API for these emails
-        for (const email of needsGraph) {
-          if (!this.graphUserIdCache.has(email.toLowerCase())) {
-            this.graphUserIdCache.set(email.toLowerCase(), this.config.userId);
-          }
-        }
+        this.logger.warn('Graph API user lookup failed; identities left unresolved.', { error: e });
       }
     }
 
-    // 4. Ensure every email has at least the default
-    for (const email of emails) {
-      if (!resolved[email]) {
-        resolved[email] = this.config.userId;
-      }
+    const unresolved = validEmails.filter(email => !resolved[email]);
+    if (unresolved.length > 0) {
+      this.logger.warn(
+        `${unresolved.length} author email(s) could not be resolved to a directory identity ` +
+        `(${unresolved.join(', ')}). Their content is attributed to the configured default identity, ` +
+        `never to another user's identity.`
+      );
     }
 
-    this.logger.info(`Resolved ${emails.size} email(s): ${needsGraph.length} via Graph API, ${emails.size - needsGraph.length} from cache/users.json.`);
+    this.logger.info(`Resolved ${Object.keys(resolved).length} of ${validEmails.length} valid email(s); ${needsGraph.length} queried via Graph API.`);
     return resolved;
   }
 
@@ -435,7 +464,12 @@ export class FileProcessor {
         ).trim();
 
         if (email) {
-          map[file.path] = email.toLowerCase();
+          const normalized = normalizeEmail(email);
+          if (normalized) {
+            map[file.path] = normalized;
+          } else {
+            this.logger.warn(`Ignoring malformed commit author email for ${file.path}: '${email}'`);
+          }
         }
       } catch {
         // Silently skip files where git log fails (e.g. untracked files)

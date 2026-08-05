@@ -75,7 +75,7 @@ describe('PurviewClient', () => {
         'Authentication token not set'
       );
       await expect(
-        client.processContent('user-1', { contentToProcess: { contentEntries: [] } as any }, '')
+        client.processContent('11111111-aaaa-4aaa-8aaa-111111111111', { contentToProcess: { contentEntries: [] } as any }, '')
       ).rejects.toThrow('Authentication token not set');
       await expect(client.uploadSignal({
         id: 'sig-1', userId: 'u1', scopeIdentifier: '',
@@ -101,14 +101,14 @@ describe('PurviewClient', () => {
       mockFetch({ status: 200, body: { id: 'pc-1', policyActions: [] } });
 
       await client.processContent(
-        'user-abc',
+        '22222222-aaaa-4aaa-8aaa-222222222222',
         { contentToProcess: { contentEntries: [] } as any },
         'scope-id',
         true
       );
 
       const callUrl = (globalThis.fetch as jest.Mock).mock.calls[0][0];
-      expect(callUrl).toContain('/users/user-abc/dataSecurityAndGovernance/processContent');
+      expect(callUrl).toContain('/users/22222222-aaaa-4aaa-8aaa-222222222222/dataSecurityAndGovernance/processContent');
     });
 
     it('adds If-None-Match header when scopeIdentifier is provided', async () => {
@@ -116,7 +116,7 @@ describe('PurviewClient', () => {
       mockFetch({ status: 200, body: {} });
 
       await client.processContent(
-        'user-1',
+        '11111111-aaaa-4aaa-8aaa-111111111111',
         { contentToProcess: { contentEntries: [] } as any },
         'etag-value'
       );
@@ -130,7 +130,7 @@ describe('PurviewClient', () => {
       mockFetch({ status: 200, body: {} });
 
       await client.processContent(
-        'user-1',
+        '11111111-aaaa-4aaa-8aaa-111111111111',
         { contentToProcess: { contentEntries: [] } as any },
         '',
         true
@@ -177,9 +177,9 @@ describe('PurviewClient', () => {
       client.setAuthToken('token');
       mockFetch({ status: 200, body: { value: [] } });
 
-      await client.searchUserProtectionScope('user-1', { activities: 'uploadText' });
+      await client.searchUserProtectionScope('11111111-aaaa-4aaa-8aaa-111111111111', { activities: 'uploadText' });
       const callUrl = (globalThis.fetch as jest.Mock).mock.calls[0][0];
-      expect(callUrl).toContain('/users/user-1/dataSecurityAndGovernance/protectionScopes/compute');
+      expect(callUrl).toContain('/users/11111111-aaaa-4aaa-8aaa-111111111111/dataSecurityAndGovernance/protectionScopes/compute');
     });
   });
 

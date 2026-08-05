@@ -124,6 +124,9 @@ export async function validateInputs(): Promise<ActionConfig> {
     if (!parsed.defaultUserId) {
       throw new Error('users.json must contain a "defaultUserId" field.');
     }
+    if (!isValidGuid(parsed.defaultUserId)) {
+      throw new Error('Invalid "defaultUserId" in users.json. Expected an Entra object ID (GUID).');
+    }
     if (!Array.isArray(parsed.users)) {
       throw new Error('users.json must contain a "users" array.');
     }

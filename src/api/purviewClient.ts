@@ -1,6 +1,7 @@
 import { ActionConfig, ApiResponse, ProcessContentBatchRequest, ProcessContentRequest, ProcessContentResponse, UploadSignalRequest, ProtectionScopesRequest, ProtectionScopesResponse, GraphUserInfoContainer } from '../config/types';
 import { Logger } from '../utils/logger';
 import { RetryHandler } from '../utils/retryHandler';
+import { isUserId } from '../utils/identity';
 
 export class PurviewClient {
   private readonly logger: Logger;
@@ -76,6 +77,11 @@ export class PurviewClient {
     }
 
     this.logger.info(`Processing content for user ${userId} (mode: ${inline ? 'inline' : 'offline'})`);
+
+    if (!isUserId(userId)) {
+      this.logger.error('Refusing to process content: user identity is not a valid directory object ID.');
+      return this.buildErrorResponse(new Error('Invalid user identity'));
+    }
 
     const endpoint = `${this.baseUrl}/users/${userId}/dataSecurityAndGovernance/processContent`;
     const payloadString: string = JSON.stringify(request);
@@ -157,6 +163,11 @@ export class PurviewClient {
 
     this.logger.info(`Searching protection scope for user ${userId}`);
 
+    if (!isUserId(userId)) {
+      this.logger.error('Refusing to compute protection scopes: user identity is not a valid directory object ID.');
+      return this.buildErrorResponse(new Error('Invalid user identity'));
+    }
+
     const endpoint = `${this.baseUrl}/users/${userId}/dataSecurityAndGovernance/protectionScopes/compute`;
     let payloadString: string = JSON.stringify(payload);
 
@@ -183,9 +194,13 @@ export class PurviewClient {
 
     this.logger.info(`Getting user info for ${userEmails.length} users`);
 
-    let usernameFilter = userEmails.map(email => `userPrincipalName eq '${email}'`).join(' OR ');
+    // Emails are attacker-influenced; escape the OData string literal and encode
+    // the filter so a crafted address cannot alter the query.
+    const usernameFilter = userEmails
+      .map(email => `userPrincipalName eq '${email.replace(/'/g, "''")}'`)
+      .join(' OR ');
 
-    const endpoint = `${this.baseUrl}/users/?$select=id,userPrincipalName&$filter=${usernameFilter}`;
+    const endpoint = `${this.baseUrl}/users/?$select=id,userPrincipalName&$filter=${encodeURIComponent(usernameFilter)}`;
 
     try {
       const result: ApiResponse<GraphUserInfoContainer> = await this.retryHandler.executeWithRetry(
