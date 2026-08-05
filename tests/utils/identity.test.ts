@@ -1,4 +1,4 @@
-import { normalizeEmail, isUserId } from '../../src/utils/identity';
+import { normalizeEmail, isUserId, normalizeUserIdentity } from '../../src/utils/identity';
 
 describe('identity input validation', () => {
   describe('normalizeEmail', () => {
@@ -31,6 +31,23 @@ describe('identity input validation', () => {
       'rejects %p',
       (value) => {
         expect(isUserId(value as string | null | undefined)).toBe(false);
+      }
+    );
+  });
+
+  describe('normalizeUserIdentity', () => {
+    it('lowercases an object ID', () => {
+      expect(normalizeUserIdentity(' 11111111-2222-4333-8444-555555555555 ')).toBe('11111111-2222-4333-8444-555555555555');
+    });
+
+    it('accepts a UPN so it can be resolved later', () => {
+      expect(normalizeUserIdentity('Dev@Contoso.com')).toBe('dev@contoso.com');
+    });
+
+    it.each([null, undefined, '', 'default-user-id', '../../someone-else', 'a b@contoso.com'])(
+      'rejects %p',
+      (value) => {
+        expect(normalizeUserIdentity(value as string | null | undefined)).toBeUndefined();
       }
     );
   });

@@ -183,6 +183,57 @@ describe('PurviewClient', () => {
     });
   });
 
+  describe('identity resolution', () => {
+    /** Queue distinct responses so the Graph lookup and the PS call differ. */
+    function mockFetchSequence(...responses: { status: number; body?: any }[]) {
+      const fetchMock = jest.fn();
+      for (const response of responses) {
+        fetchMock.mockResolvedValueOnce({
+          ok: response.status >= 200 && response.status < 300,
+          status: response.status,
+          statusText: 'OK',
+          text: jest.fn().mockResolvedValue(JSON.stringify(response.body ?? {})),
+          headers: { get: () => null },
+        });
+      }
+      globalThis.fetch = fetchMock;
+      return fetchMock;
+    }
+
+    it('resolves a UPN to its object ID and continues the normal flow', async () => {
+      client.setAuthToken('token');
+      const fetchMock = mockFetchSequence(
+        { status: 200, body: { value: [{ id: '99999999-aaaa-4aaa-8aaa-999999999999', userPrincipalName: 'dev@contoso.com' }] } },
+        { status: 200, body: { value: [] } }
+      );
+
+      const result = await client.searchUserProtectionScope('Dev@Contoso.com', { activities: 'uploadText' });
+
+      expect(result.success).toBe(true);
+      expect(fetchMock.mock.calls[1][0]).toContain('/users/99999999-aaaa-4aaa-8aaa-999999999999/dataSecurityAndGovernance/protectionScopes/compute');
+    });
+
+    it('skips the protection-scope call when a UPN cannot be resolved', async () => {
+      client.setAuthToken('token');
+      const fetchMock = mockFetchSequence({ status: 200, body: { value: [] } });
+
+      const result = await client.searchUserProtectionScope('ghost@contoso.com', { activities: 'uploadText' });
+
+      expect(result.success).toBe(false);
+      expect(fetchMock).toHaveBeenCalledTimes(1); // only the Graph lookup
+    });
+
+    it('skips processContent when the identity is neither a GUID nor a UPN', async () => {
+      client.setAuthToken('token');
+      const fetchMock = mockFetchSequence({ status: 200, body: {} });
+
+      const result = await client.processContent('../../evil', { contentToProcess: {} } as any, '', true);
+
+      expect(result.success).toBe(false);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
   describe('getUserInfo', () => {
     it('sends GET request with filter query', async () => {
       client.setAuthToken('token');

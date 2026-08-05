@@ -34,3 +34,18 @@ export function normalizeEmail(email: string | null | undefined): string | undef
 export function isUserId(userId: string | null | undefined): boolean {
   return !!userId && GUID_PATTERN.test(userId.trim());
 }
+
+/**
+ * Normalize a configured or resolved identity into a value that is safe to use
+ * as a Graph `/users/{id | userPrincipalName}` path segment.
+ *
+ * Returns the GUID for an object ID, the normalized address for a UPN, and
+ * undefined for anything else — so a malformed identity can never be spliced
+ * into a request URL.
+ */
+export function normalizeUserIdentity(value: string | null | undefined): string | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (GUID_PATTERN.test(trimmed)) return trimmed.toLowerCase();
+  return normalizeEmail(trimmed);
+}

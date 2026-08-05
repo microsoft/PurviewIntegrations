@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { UsersConfig } from '../config/types';
 import { Logger } from './logger';
-import { normalizeEmail, isUserId } from './identity';
+import { normalizeEmail, normalizeUserIdentity } from './identity';
 
 /**
  * Resolves Azure AD user IDs from a local users.json mapping file.
@@ -28,11 +28,12 @@ export class UserResolver {
 
     for (const mapping of usersConfig.users) {
       const email = normalizeEmail(mapping.email);
-      if (!email || !isUserId(mapping.userId)) {
-        this.logger.warn(`Ignoring invalid users.json mapping for email '${mapping.email}' — email must be a valid address and userId a GUID.`);
+      const userId = normalizeUserIdentity(mapping.userId);
+      if (!email || !userId) {
+        this.logger.warn(`Ignoring invalid users.json mapping for email '${mapping.email}' — email must be a valid address and userId a GUID or user principal name.`);
         continue;
       }
-      this.emailToUserId.set(email, mapping.userId);
+      this.emailToUserId.set(email, userId);
     }
 
     this.logger.info(`UserResolver initialised with ${this.emailToUserId.size} mapping(s) and default userId: ${this.defaultUserId}`);

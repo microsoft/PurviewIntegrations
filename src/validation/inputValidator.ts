@@ -3,6 +3,7 @@ import * as github from '@actions/github';
 import { ActionConfig, UsersConfig } from '../config/types';
 import { Logger } from '../utils/logger';
 import { tryParseWorkflowRepoFromEnv } from '../utils/workflowRepo';
+import { normalizeUserIdentity } from '../utils/identity';
 
 export async function validateInputs(): Promise<ActionConfig> {
   const logger = new Logger('InputValidator');
@@ -124,15 +125,16 @@ export async function validateInputs(): Promise<ActionConfig> {
     if (!parsed.defaultUserId) {
       throw new Error('users.json must contain a "defaultUserId" field.');
     }
-    if (!isValidGuid(parsed.defaultUserId)) {
-      throw new Error('Invalid "defaultUserId" in users.json. Expected an Entra object ID (GUID).');
+    const defaultIdentity = normalizeUserIdentity(parsed.defaultUserId);
+    if (!defaultIdentity) {
+      throw new Error('Invalid "defaultUserId" in users.json. Expected an Entra object ID (GUID) or a user principal name.');
     }
     if (!Array.isArray(parsed.users)) {
       throw new Error('users.json must contain a "users" array.');
     }
 
     userMappings = parsed.users;
-    userId = parsed.defaultUserId;
+    userId = defaultIdentity;
     logger.info(`Loaded ${userMappings.length} user mapping(s)`);
     logger.info(`Default userId from users.json: ${userId}`);
     

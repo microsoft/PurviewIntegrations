@@ -63129,6 +63129,22 @@ function normalizeEmail(email) {
 function isUserId(userId) {
     return !!userId && GUID_PATTERN.test(userId.trim());
 }
+/**
+ * Normalize a configured or resolved identity into a value that is safe to use
+ * as a Graph `/users/{id | userPrincipalName}` path segment.
+ *
+ * Returns the GUID for an object ID, the normalized address for a UPN, and
+ * undefined for anything else — so a malformed identity can never be spliced
+ * into a request URL.
+ */
+function normalizeUserIdentity(value) {
+    if (!value)
+        return undefined;
+    const trimmed = value.trim();
+    if (GUID_PATTERN.test(trimmed))
+        return trimmed.toLowerCase();
+    return normalizeEmail(trimmed);
+}
 //# sourceMappingURL=identity.js.map
 ;// CONCATENATED MODULE: ./dist/api/purviewClient.js
 
@@ -63150,6 +63166,41 @@ class PurviewClient {
     }
     setAuthToken(token) {
         this.authToken = token;
+    }
+    /** Cache: normalized UPN → directory object ID. */
+    identityCache = new Map();
+    /**
+     * Resolve the caller-supplied identity to a directory object ID.
+     *
+     * A GUID is used as-is. A UPN is looked up in Graph and replaced by its
+     * object ID. Anything that cannot be resolved to an object ID — an unknown
+     * UPN, a failed lookup, or a value that is neither — returns undefined; the
+     * caller then skips the protection-scope / processContent calls and routes
+     * the content to contentActivities instead.
+     */
+    async resolveIdentity(userId) {
+        const identity = normalizeUserIdentity(userId);
+        if (!identity || isUserId(identity)) {
+            return identity;
+        }
+        const cached = this.identityCache.get(identity);
+        if (cached) {
+            return cached;
+        }
+        try {
+            const response = await this.getUserInfo([identity]);
+            const match = response.data?.value?.find(user => normalizeEmail(user.userPrincipalName) === identity);
+            if (match && isUserId(match.id)) {
+                this.logger.debug(`Resolved UPN '${identity}' to directory object ID ${match.id}`);
+                this.identityCache.set(identity, match.id);
+                return match.id;
+            }
+            this.logger.warn(`No directory object ID found for UPN '${identity}'.`);
+        }
+        catch (error) {
+            this.logger.warn(`UPN lookup failed for '${identity}'.`, { error });
+        }
+        return undefined;
     }
     /**
      * Set a callback that returns a fresh access token.  When set, the provider
@@ -63196,11 +63247,12 @@ class PurviewClient {
             throw new Error('Authentication token not set');
         }
         this.logger.info(`Processing content for user ${userId} (mode: ${inline ? 'inline' : 'offline'})`);
-        if (!isUserId(userId)) {
-            this.logger.error('Refusing to process content: user identity is not a valid directory object ID.');
-            return this.buildErrorResponse(new Error('Invalid user identity'));
+        const identity = await this.resolveIdentity(userId);
+        if (!identity) {
+            this.logger.warn(`Skipping processContent for '${userId}': identity could not be resolved to a directory object ID. Content is routed to contentActivities instead.`);
+            return this.buildErrorResponse(new Error('Unresolved user identity'));
         }
-        const endpoint = `${this.baseUrl}/users/${userId}/dataSecurityAndGovernance/processContent`;
+        const endpoint = `${this.baseUrl}/users/${encodeURIComponent(identity)}/dataSecurityAndGovernance/processContent`;
         const payloadString = JSON.stringify(request);
         const additionalHeaders = {};
         if (scopeIdentifier) {
@@ -63257,11 +63309,12 @@ class PurviewClient {
             throw new Error('Authentication token not set');
         }
         this.logger.info(`Searching protection scope for user ${userId}`);
-        if (!isUserId(userId)) {
-            this.logger.error('Refusing to compute protection scopes: user identity is not a valid directory object ID.');
-            return this.buildErrorResponse(new Error('Invalid user identity'));
+        const identity = await this.resolveIdentity(userId);
+        if (!identity) {
+            this.logger.warn(`Skipping protection-scope lookup for '${userId}': identity could not be resolved to a directory object ID. Content is routed to contentActivities instead.`);
+            return this.buildErrorResponse(new Error('Unresolved user identity'));
         }
-        const endpoint = `${this.baseUrl}/users/${userId}/dataSecurityAndGovernance/protectionScopes/compute`;
+        const endpoint = `${this.baseUrl}/users/${encodeURIComponent(identity)}/dataSecurityAndGovernance/protectionScopes/compute`;
         let payloadString = JSON.stringify(payload);
         try {
             const result = await this.retryHandler.executeWithRetry(async () => this.sendRequest(endpoint, payloadString, 'POST', {}, 'SearchUserProtectionScope'), 'SearchUserProtectionScope');
@@ -63444,11 +63497,12 @@ class UserResolver {
         this.defaultUserId = usersConfig.defaultUserId;
         for (const mapping of usersConfig.users) {
             const email = normalizeEmail(mapping.email);
-            if (!email || !isUserId(mapping.userId)) {
-                this.logger.warn(`Ignoring invalid users.json mapping for email '${mapping.email}' — email must be a valid address and userId a GUID.`);
+            const userId = normalizeUserIdentity(mapping.userId);
+            if (!email || !userId) {
+                this.logger.warn(`Ignoring invalid users.json mapping for email '${mapping.email}' — email must be a valid address and userId a GUID or user principal name.`);
                 continue;
             }
-            this.emailToUserId.set(email, mapping.userId);
+            this.emailToUserId.set(email, userId);
         }
         this.logger.info(`UserResolver initialised with ${this.emailToUserId.size} mapping(s) and default userId: ${this.defaultUserId}`);
     }
@@ -66259,6 +66313,7 @@ class GitHubActionsRunner {
 
 
 
+
 async function validateInputs() {
     const logger = new logger_Logger('InputValidator');
     try {
@@ -66350,14 +66405,15 @@ async function validateInputs() {
         if (!parsed.defaultUserId) {
             throw new Error('users.json must contain a "defaultUserId" field.');
         }
-        if (!isValidGuid(parsed.defaultUserId)) {
-            throw new Error('Invalid "defaultUserId" in users.json. Expected an Entra object ID (GUID).');
+        const defaultIdentity = normalizeUserIdentity(parsed.defaultUserId);
+        if (!defaultIdentity) {
+            throw new Error('Invalid "defaultUserId" in users.json. Expected an Entra object ID (GUID) or a user principal name.');
         }
         if (!Array.isArray(parsed.users)) {
             throw new Error('users.json must contain a "users" array.');
         }
         userMappings = parsed.users;
-        userId = parsed.defaultUserId;
+        userId = defaultIdentity;
         logger.info(`Loaded ${userMappings.length} user mapping(s)`);
         logger.info(`Default userId from users.json: ${userId}`);
         // Validate format
