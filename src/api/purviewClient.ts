@@ -1,6 +1,7 @@
 import { ActionConfig, ApiResponse, ProcessContentBatchRequest, ProcessContentRequest, ProcessContentResponse, UploadSignalRequest, ProtectionScopesRequest, ProtectionScopesResponse, GraphUserInfoContainer } from '../config/types';
 import { Logger } from '../utils/logger';
 import { RetryHandler } from '../utils/retryHandler';
+import { isUserId, normalizeEmail, normalizeUserIdentity } from '../utils/identity';
 
 export class PurviewClient {
   private readonly logger: Logger;
@@ -18,6 +19,45 @@ export class PurviewClient {
   
   setAuthToken(token: string): void {
     this.authToken = token;
+  }
+
+  /** Cache: normalized UPN → directory object ID. */
+  private readonly identityCache: Map<string, string> = new Map();
+
+  /**
+   * Resolve the caller-supplied identity to a directory object ID.
+   *
+   * A GUID is used as-is. A UPN is looked up in Graph and replaced by its
+   * object ID. Anything that cannot be resolved to an object ID — an unknown
+   * UPN, a failed lookup, or a value that is neither — returns undefined; the
+   * caller then skips the protection-scope / processContent calls and routes
+   * the content to contentActivities instead.
+   */
+  private async resolveIdentity(userId: string): Promise<string | undefined> {
+    const identity = normalizeUserIdentity(userId);
+    if (!identity || isUserId(identity)) {
+      return identity;
+    }
+
+    const cached = this.identityCache.get(identity);
+    if (cached) {
+      return cached;
+    }
+
+    try {
+      const response = await this.getUserInfo([identity]);
+      const match = response.data?.value?.find(user => normalizeEmail(user.userPrincipalName) === identity);
+      if (match && isUserId(match.id)) {
+        this.logger.debug(`Resolved UPN '${identity}' to directory object ID ${match.id}`);
+        this.identityCache.set(identity, match.id);
+        return match.id;
+      }
+      this.logger.warn(`No directory object ID found for UPN '${identity}'.`);
+    } catch (error) {
+      this.logger.warn(`UPN lookup failed for '${identity}'.`, { error });
+    }
+
+    return undefined;
   }
 
   /**
@@ -77,8 +117,13 @@ export class PurviewClient {
 
     this.logger.info(`Processing content for user ${userId} (mode: ${inline ? 'inline' : 'offline'})`);
 
-    const endpoint = `${this.baseUrl}/users/${userId}/dataSecurityAndGovernance/processContent`;
-    const payloadString: string = JSON.stringify(request);
+    const identity = await this.resolveIdentity(userId);
+    if (!identity) {
+      this.logger.warn(`Skipping processContent for '${userId}': identity could not be resolved to a directory object ID. Content is routed to contentActivities instead.`);
+      return this.buildErrorResponse(new Error('Unresolved user identity'));
+    }
+
+    const endpoint = `${this.baseUrl}/users/${encodeURIComponent(identity)}/dataSecurityAndGovernance/processContent`;    const payloadString: string = JSON.stringify(request);
 
     const additionalHeaders: Record<string, string> = {};
     if (scopeIdentifier) {
@@ -157,7 +202,13 @@ export class PurviewClient {
 
     this.logger.info(`Searching protection scope for user ${userId}`);
 
-    const endpoint = `${this.baseUrl}/users/${userId}/dataSecurityAndGovernance/protectionScopes/compute`;
+    const identity = await this.resolveIdentity(userId);
+    if (!identity) {
+      this.logger.warn(`Skipping protection-scope lookup for '${userId}': identity could not be resolved to a directory object ID. Content is routed to contentActivities instead.`);
+      return this.buildErrorResponse(new Error('Unresolved user identity'));
+    }
+
+    const endpoint = `${this.baseUrl}/users/${encodeURIComponent(identity)}/dataSecurityAndGovernance/protectionScopes/compute`;
     let payloadString: string = JSON.stringify(payload);
 
     try {
@@ -183,9 +234,13 @@ export class PurviewClient {
 
     this.logger.info(`Getting user info for ${userEmails.length} users`);
 
-    let usernameFilter = userEmails.map(email => `userPrincipalName eq '${email}'`).join(' OR ');
+    // Emails are attacker-influenced; escape the OData string literal and encode
+    // the filter so a crafted address cannot alter the query.
+    const usernameFilter = userEmails
+      .map(email => `userPrincipalName eq '${email.replace(/'/g, "''")}'`)
+      .join(' OR ');
 
-    const endpoint = `${this.baseUrl}/users/?$select=id,userPrincipalName&$filter=${usernameFilter}`;
+    const endpoint = `${this.baseUrl}/users/?$select=id,userPrincipalName&$filter=${encodeURIComponent(usernameFilter)}`;
 
     try {
       const result: ApiResponse<GraphUserInfoContainer> = await this.retryHandler.executeWithRetry(

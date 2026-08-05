@@ -75,7 +75,7 @@ describe('PurviewClient', () => {
         'Authentication token not set'
       );
       await expect(
-        client.processContent('user-1', { contentToProcess: { contentEntries: [] } as any }, '')
+        client.processContent('11111111-aaaa-4aaa-8aaa-111111111111', { contentToProcess: { contentEntries: [] } as any }, '')
       ).rejects.toThrow('Authentication token not set');
       await expect(client.uploadSignal({
         id: 'sig-1', userId: 'u1', scopeIdentifier: '',
@@ -101,14 +101,14 @@ describe('PurviewClient', () => {
       mockFetch({ status: 200, body: { id: 'pc-1', policyActions: [] } });
 
       await client.processContent(
-        'user-abc',
+        '22222222-aaaa-4aaa-8aaa-222222222222',
         { contentToProcess: { contentEntries: [] } as any },
         'scope-id',
         true
       );
 
       const callUrl = (globalThis.fetch as jest.Mock).mock.calls[0][0];
-      expect(callUrl).toContain('/users/user-abc/dataSecurityAndGovernance/processContent');
+      expect(callUrl).toContain('/users/22222222-aaaa-4aaa-8aaa-222222222222/dataSecurityAndGovernance/processContent');
     });
 
     it('adds If-None-Match header when scopeIdentifier is provided', async () => {
@@ -116,7 +116,7 @@ describe('PurviewClient', () => {
       mockFetch({ status: 200, body: {} });
 
       await client.processContent(
-        'user-1',
+        '11111111-aaaa-4aaa-8aaa-111111111111',
         { contentToProcess: { contentEntries: [] } as any },
         'etag-value'
       );
@@ -130,7 +130,7 @@ describe('PurviewClient', () => {
       mockFetch({ status: 200, body: {} });
 
       await client.processContent(
-        'user-1',
+        '11111111-aaaa-4aaa-8aaa-111111111111',
         { contentToProcess: { contentEntries: [] } as any },
         '',
         true
@@ -177,9 +177,60 @@ describe('PurviewClient', () => {
       client.setAuthToken('token');
       mockFetch({ status: 200, body: { value: [] } });
 
-      await client.searchUserProtectionScope('user-1', { activities: 'uploadText' });
+      await client.searchUserProtectionScope('11111111-aaaa-4aaa-8aaa-111111111111', { activities: 'uploadText' });
       const callUrl = (globalThis.fetch as jest.Mock).mock.calls[0][0];
-      expect(callUrl).toContain('/users/user-1/dataSecurityAndGovernance/protectionScopes/compute');
+      expect(callUrl).toContain('/users/11111111-aaaa-4aaa-8aaa-111111111111/dataSecurityAndGovernance/protectionScopes/compute');
+    });
+  });
+
+  describe('identity resolution', () => {
+    /** Queue distinct responses so the Graph lookup and the PS call differ. */
+    function mockFetchSequence(...responses: { status: number; body?: any }[]) {
+      const fetchMock = jest.fn();
+      for (const response of responses) {
+        fetchMock.mockResolvedValueOnce({
+          ok: response.status >= 200 && response.status < 300,
+          status: response.status,
+          statusText: 'OK',
+          text: jest.fn().mockResolvedValue(JSON.stringify(response.body ?? {})),
+          headers: { get: () => null },
+        });
+      }
+      globalThis.fetch = fetchMock;
+      return fetchMock;
+    }
+
+    it('resolves a UPN to its object ID and continues the normal flow', async () => {
+      client.setAuthToken('token');
+      const fetchMock = mockFetchSequence(
+        { status: 200, body: { value: [{ id: '99999999-aaaa-4aaa-8aaa-999999999999', userPrincipalName: 'dev@contoso.com' }] } },
+        { status: 200, body: { value: [] } }
+      );
+
+      const result = await client.searchUserProtectionScope('Dev@Contoso.com', { activities: 'uploadText' });
+
+      expect(result.success).toBe(true);
+      expect(fetchMock.mock.calls[1][0]).toContain('/users/99999999-aaaa-4aaa-8aaa-999999999999/dataSecurityAndGovernance/protectionScopes/compute');
+    });
+
+    it('skips the protection-scope call when a UPN cannot be resolved', async () => {
+      client.setAuthToken('token');
+      const fetchMock = mockFetchSequence({ status: 200, body: { value: [] } });
+
+      const result = await client.searchUserProtectionScope('ghost@contoso.com', { activities: 'uploadText' });
+
+      expect(result.success).toBe(false);
+      expect(fetchMock).toHaveBeenCalledTimes(1); // only the Graph lookup
+    });
+
+    it('skips processContent when the identity is neither a GUID nor a UPN', async () => {
+      client.setAuthToken('token');
+      const fetchMock = mockFetchSequence({ status: 200, body: {} });
+
+      const result = await client.processContent('../../evil', { contentToProcess: {} } as any, '', true);
+
+      expect(result.success).toBe(false);
+      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 

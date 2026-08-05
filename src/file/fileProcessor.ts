@@ -4,6 +4,7 @@ import * as glob from '@actions/glob';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { execFileSync } from 'child_process';
+import { normalizeEmail } from '../utils/identity';
 import isBinaryPath from 'is-binary-path';
 import { minimatch } from 'minimatch';
 import { ActionConfig, FileMetadata, PrInfo, CommitInfo, CommitFiles } from '../config/types';
@@ -74,10 +75,19 @@ export class FileProcessor {
 
     // 3. Call Graph API for the rest
     if (needsGraph.length > 0) {
+      // Author emails come from commit metadata and are attacker-controlled.
+      // Only plausible addresses are sent to Graph; the rest keep the default
+      // identity assigned in step 4, exactly as an unresolved address does.
+      const lookupEmails = needsGraph.filter(email => {
+        if (normalizeEmail(email)) return true;
+        this.logger.warn(`Not looking up malformed author email: '${email}'`);
+        return false;
+      });
+
       try {
         const token = await this.authService.getToken();
         this.purviewClient.setAuthToken(token.accessToken);
-        const response = await this.purviewClient.getUserInfo(needsGraph);
+        const response = await this.purviewClient.getUserInfo(lookupEmails);
 
         if (response.success && response.data) {
           for (const user of response.data.value) {
