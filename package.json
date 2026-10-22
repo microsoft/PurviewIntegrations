@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "GitHub Action for Microsoft Purview integration",
   "main": "dist/index.js",
+  "engines": {
+    "node": "^24.22.1"
+  },
   "scripts": {
     "build": "tsc",
     "package": "ncc build dist/index.js -o dist",

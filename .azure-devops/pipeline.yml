@@ -30,10 +30,10 @@ extends:
 
               - task: NodeTool@0
                 inputs:
-                  versionSpec: '20.x'
-                displayName: Use Node.js 20
+                  versionSpec: '24.22.1'
+                displayName: Use Node.js 24.22.1
 
-              - script: npm install
+              - script: npm ci
                 displayName: Install dependencies
 
               - script: npm test

@@ -15,6 +15,10 @@ A GitHub Action that scans repository files and sends them to Azure Purview for 
 1. Azure AD Application with federated credentials configured for GitHub OIDC
 2. Purview account with API access enabled
 3. GitHub repository with OIDC permissions
+4. A GitHub Actions runner with Node.js **24.22.1 or later in the 24.x line** for
+   JavaScript actions. Keep self-hosted runners and their bundled Node runtime updated;
+   `actions/setup-node` does not replace this action's runtime. The action rejects
+   older runtimes before making network requests (see [runtime security](docs/github-actions.md#runtime-security)).
 
 ## Auth Setup
 1. Create an app registration in entra with the following permissions:
@@ -205,6 +209,8 @@ The action implements comprehensive error handling:
 - All errors include actionable context for debugging
 
 ## Development
+
+Use Node.js **24.22.1 or later in the 24.x line**, matching CI and the action runtime.
 
 ```bash
 # Install dependencies

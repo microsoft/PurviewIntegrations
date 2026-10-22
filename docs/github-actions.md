@@ -1,6 +1,6 @@
 # GitHub Actions Conventions
 
-This repository ships a **JavaScript/TypeScript GitHub Action** (`runs.using: node20`,
+This repository ships a **JavaScript/TypeScript GitHub Action** (`runs.using: node24`,
 `runs.main: dist/index.js` in [`action.yml`](../action.yml)). The rules below are the
 Actions-specific best practices that apply on top of the general
 [code conventions](conventions.md). They describe what the repo already does and what new
@@ -13,9 +13,24 @@ code must keep doing.
 - Give each input a clear `description`, mark it `required: true` only when the action cannot
   run without it, and provide a `default` for optional inputs where a sensible one exists
   (e.g. `file-patterns: '**'`, `max-file-size: '10485760'`).
-- Keep `runs.using` (`node20`) in sync with the Node version used in CI and in
-  [`tsconfig.json`](../tsconfig.json) target expectations. Bump them together.
+- Keep `runs.using` (`node24`) in sync with the Node version used in CI and
+  `package.json` engines. The `ES2022` target in [`tsconfig.json`](../tsconfig.json)
+  remains compatible with Node 24.
 - `runs.main` points at the committed bundle `dist/index.js` — never at `src/`.
+
+## Runtime security
+
+- The action requires Node.js **24.22.1 or later in the 24.x line** for the
+  [CVE-2026-111497 Brotli fix](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases).
+  Startup rejects older runtimes before input validation or network activity.
+- The Actions runner supplies the JavaScript-action runtime. Update self-hosted runners
+  and verify their bundled `externals/node24` runtime meets this minimum.
+  Runner v2.327.1 introduced Node 24 support, but support alone does not guarantee a
+  patched Node version. `actions/setup-node` changes workflow shell steps, not this
+  action's runtime.
+- HTTP clients can decode unsolicited Brotli responses even when `Accept-Encoding`
+  excludes `br`. Header pinning and npm dependency updates are not substitutes for a
+  patched native runtime. Rebuilding `dist/` does not bundle Node or native Brotli.
 
 ## Inputs and outputs (the `@actions/core` toolkit)
 

@@ -61,7 +61,7 @@ outputs:
     description: 'JSON array of file paths that were blocked by data security policies'
 
 runs:
-  using: 'node20'
+  using: 'node24'
   main: 'dist/index.js'
 
 branding:
